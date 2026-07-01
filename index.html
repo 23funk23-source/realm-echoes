@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Realm of Echoes</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="menu" class="overlay">
+  <h1>Realm of Echoes</h1>
+  <p class="tagline">Мини-рогалик в духе Realm of the Mad God: один забег, три босса, перманентная смерть.</p>
+  <div class="cards">
+    <button class="card warrior" onclick="startRun('warrior')">
+      <span class="card-icon" style="--c:#e8843c">&#9876;</span>
+      <span class="card-name">Воин</span>
+      <ul>
+        <li>HP: высокое (160)</li>
+        <li>Урон: высокий, дальность короткая</li>
+        <li>Умение: рывок-удар по площади</li>
+      </ul>
+    </button>
+    <button class="card archer" onclick="startRun('archer')">
+      <span class="card-icon" style="--c:#7ac74f">&#10148;</span>
+      <span class="card-name">Лучник</span>
+      <ul>
+        <li>HP: низкое (105), скорость высокая</li>
+        <li>Дальность: длинная, стрелы пробивают</li>
+        <li>Умение: веер из 7 стрел</li>
+      </ul>
+    </button>
+    <button class="card wizard" onclick="startRun('wizard')">
+      <span class="card-icon" style="--c:#8f7ae8">&#10038;</span>
+      <span class="card-name">Маг</span>
+      <ul>
+        <li>HP: минимальное (90)</li>
+        <li>Темп огня: очень высокий, 2 снаряда</li>
+        <li>Умение: нова из 22 снарядов</li>
+      </ul>
+    </button>
+  </div>
+  <p class="hint">WASD — движение &middot; мышь — прицел и огонь &middot; Space/ПКМ — умение &middot; M — музыка &middot; P — пауза</p>
+  <p class="hint dim">Звук включится после выбора класса</p>
+</div>
+
+<div id="gameover" class="overlay hidden">
+  <h1 class="red">Вы погибли</h1>
+  <p id="deathStats" class="stats"></p>
+  <button class="btn" onclick="toMenu()">Попробовать снова</button>
+</div>
+
+<div id="victory" class="overlay hidden">
+  <h1 class="gold">Победа!</h1>
+  <p class="tagline">Лич пал. Королевство эха свободно.</p>
+  <p id="winStats" class="stats"></p>
+  <button class="btn" onclick="toMenu()">Сыграть ещё раз</button>
+</div>
+
+<script src="js/audio.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>

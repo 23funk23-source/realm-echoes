@@ -1,0 +1,841 @@
+'use strict';
+
+// ================= утилиты =================
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; };
+
+// ================= канвас =================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; }
+addEventListener('resize', resize);
+resize();
+
+const WORLD = 1800;
+
+// ================= состояние =================
+let state = 'menu'; // menu | play | pause | dead | win
+let player = null;
+let bullets = [], ebullets = [], enemies = [], drops = [], particles = [];
+let boss = null;
+let cam = { x: 0, y: 0 };
+let stageIdx = 0, nextT = 0, banner = null, shake = 0;
+let runTime = 0, killCount = 0, gameTime = 0;
+
+// ================= ввод =================
+const keys = {};
+const mouse = { x: 0, y: 0, down: false };
+
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') { e.preventDefault(); useAbility(); }
+  if (e.code === 'KeyM') Music.toggleMute();
+  if (e.code === 'KeyP' && (state === 'play' || state === 'pause')) {
+    state = state === 'play' ? 'pause' : 'play';
+  }
+});
+addEventListener('keyup', e => keys[e.code] = false);
+addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 0) mouse.down = true;
+  if (e.button === 2) useAbility();
+});
+addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('blur', () => { mouse.down = false; });
+
+// ================= классы =================
+const CLASSES = {
+  warrior: {
+    key: 'warrior', name: 'Воин', color: '#e8843c',
+    hp: 160, speed: 215, dmg: 24, fireRate: 2.6, projSpeed: 430, range: 195,
+    projR: 7, shots: 1, spread: 0, pierce: 0,
+    abilityCd: 5, abilityName: 'Рывок-удар',
+  },
+  archer: {
+    key: 'archer', name: 'Лучник', color: '#7ac74f',
+    hp: 105, speed: 245, dmg: 17, fireRate: 3.4, projSpeed: 580, range: 430,
+    projR: 5, shots: 1, spread: 0, pierce: 1,
+    abilityCd: 6, abilityName: 'Веер стрел',
+  },
+  wizard: {
+    key: 'wizard', name: 'Маг', color: '#8f7ae8',
+    hp: 90, speed: 228, dmg: 12, fireRate: 5, projSpeed: 520, range: 350,
+    projR: 5, shots: 2, spread: 0.14, pierce: 0,
+    abilityCd: 7, abilityName: 'Нова',
+  },
+};
+
+// ================= враги =================
+const KINDS = {
+  slime:    { r: 16, hp: 32, speed: 72,  dmg: 10, xp: 8,  color: '#8bc34a', behavior: 'chase' },
+  bat:      { r: 11, hp: 18, speed: 155, dmg: 8,  xp: 6,  color: '#a06adf', behavior: 'chase', wobble: true },
+  cultist:  { r: 14, hp: 28, speed: 95,  dmg: 10, xp: 10, color: '#d85c5c', behavior: 'shoot',  shootCd: 1.9, bSpeed: 235, bDmg: 11 },
+  skeleton: { r: 15, hp: 38, speed: 80,  dmg: 12, xp: 12, color: '#cfd2d8', behavior: 'shoot3', shootCd: 2.3, bSpeed: 205, bDmg: 9 },
+};
+
+function spawnEnemy(kindKey, x, y) {
+  const k = KINDS[kindKey];
+  enemies.push({
+    kind: kindKey, k, x, y, r: k.r, hp: k.hp, maxHp: k.hp,
+    shootT: rand(0.5, k.shootCd || 1), strafeDir: Math.random() < 0.5 ? 1 : -1,
+    seed: rand(0, TAU), touchT: 0,
+  });
+}
+
+function spawnWaveEnemy(kindKey) {
+  let x, y, tries = 0;
+  do {
+    x = rand(80, WORLD - 80);
+    y = rand(80, WORLD - 80);
+    tries++;
+  } while (dist2(x, y, player.x, player.y) < 450 * 450 && tries < 40);
+  spawnEnemy(kindKey, x, y);
+}
+
+// ================= боссы =================
+function ering(x, y, n, speed, dmg, color, offset = 0, br = 7) {
+  for (let i = 0; i < n; i++) {
+    const a = offset + (i / n) * TAU;
+    ebullets.push({ x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r: br, dmg, color, life: 9 });
+  }
+}
+function efan(x, y, n, spread, speed, dmg, color, br = 7) {
+  const base = Math.atan2(player.y - y, player.x - x);
+  for (let i = 0; i < n; i++) {
+    const a = base + (n === 1 ? 0 : -spread / 2 + (i / (n - 1)) * spread);
+    ebullets.push({ x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r: br, dmg, color, life: 9 });
+  }
+}
+
+const BOSSDEFS = {
+  slimeKing: {
+    name: 'Король Слизней', hp: 900, r: 52, color: '#7ec850', speed: 46,
+    contact: 16, xp: 150, bColor: '#b6e388',
+    init(b) { b.tRing = 1.6; b.tSpawn = 4; b.ringOff = 0; },
+    update(b, dt) {
+      // медленно ползёт к игроку
+      const a = Math.atan2(player.y - b.y, player.x - b.x);
+      b.x += Math.cos(a) * b.speed * dt;
+      b.y += Math.sin(a) * b.speed * dt;
+      const enraged = b.hp < b.maxHp * 0.5;
+      b.tRing -= dt;
+      if (b.tRing <= 0) {
+        b.tRing = enraged ? 1.7 : 2.4;
+        b.ringOff += 0.35;
+        ering(b.x, b.y, enraged ? 22 : 18, 150, 12, this.bColor, b.ringOff);
+        shake = Math.max(shake, 4);
+      }
+      b.tSpawn -= dt;
+      if (b.tSpawn <= 0) {
+        b.tSpawn = 7;
+        if (enemies.length < 5) {
+          spawnEnemy('slime', b.x + rand(-70, 70), b.y + rand(-70, 70));
+          spawnEnemy('slime', b.x + rand(-70, 70), b.y + rand(-70, 70));
+        }
+      }
+    },
+  },
+  guardian: {
+    name: 'Страж Обелиска', hp: 1300, r: 46, color: '#5a8fd8', speed: 26,
+    contact: 14, xp: 220, bColor: '#9cc4f0',
+    init(b) { b.ang = 0; b.tSpiral = 0; b.tVolley = 2.5; },
+    update(b, dt) {
+      const a = Math.atan2(player.y - b.y, player.x - b.x);
+      b.x += Math.cos(a) * b.speed * dt;
+      b.y += Math.sin(a) * b.speed * dt;
+      const enraged = b.hp < b.maxHp * 0.5;
+      b.ang += dt * 2.6;
+      b.tSpiral -= dt;
+      if (b.tSpiral <= 0) {
+        b.tSpiral = enraged ? 0.14 : 0.11;
+        const arms = enraged ? 3 : 2;
+        for (let i = 0; i < arms; i++) {
+          const aa = b.ang + (i / arms) * TAU;
+          ebullets.push({ x: b.x, y: b.y, vx: Math.cos(aa) * 172, vy: Math.sin(aa) * 172, r: 7, dmg: 13, color: this.bColor, life: 9 });
+        }
+      }
+      b.tVolley -= dt;
+      if (b.tVolley <= 0) {
+        b.tVolley = 3.2;
+        efan(b.x, b.y, 5, 0.5, 245, 13, '#e8e2a0');
+      }
+    },
+  },
+  lich: {
+    name: 'Лич', hp: 1500, r: 40, color: '#b06ee0', speed: 0,
+    contact: 15, xp: 300, bColor: '#d9a8ff',
+    init(b) { b.tTp = 3; b.tFan = 1.5; b.tSummon = 5; },
+    update(b, dt) {
+      const rage = b.hp < b.maxHp * 0.35;
+      b.tTp -= dt;
+      if (b.tTp <= 0) {
+        b.tTp = rage ? 3.2 : 4.5;
+        burst(b.x, b.y, 18, b.color);
+        const a = rand(0, TAU), d = rand(260, 380);
+        b.x = clamp(player.x + Math.cos(a) * d, 90, WORLD - 90);
+        b.y = clamp(player.y + Math.sin(a) * d, 90, WORLD - 90);
+        burst(b.x, b.y, 18, b.color);
+        Music.sfx('teleport');
+        if (rage) ering(b.x, b.y, 14, 190, 14, this.bColor);
+      }
+      b.tFan -= dt;
+      if (b.tFan <= 0) {
+        b.tFan = rage ? 0.95 : 1.5;
+        efan(b.x, b.y, rage ? 7 : 5, 0.5, 265, 15, this.bColor);
+      }
+      b.tSummon -= dt;
+      if (b.tSummon <= 0) {
+        b.tSummon = 9;
+        if (enemies.length < 4) spawnEnemy('skeleton', b.x + rand(-90, 90), b.y + rand(-90, 90));
+      }
+    },
+  },
+};
+
+function spawnBoss(key) {
+  const def = BOSSDEFS[key];
+  const toCenter = Math.atan2(WORLD / 2 - player.y, WORLD / 2 - player.x);
+  boss = {
+    key, def, name: def.name,
+    hp: def.hp, maxHp: def.hp, r: def.r, color: def.color, speed: def.speed,
+    x: clamp(player.x + Math.cos(toCenter) * 560, 110, WORLD - 110),
+    y: clamp(player.y + Math.sin(toCenter) * 560, 110, WORLD - 110),
+    touchT: 0,
+  };
+  def.init(boss);
+}
+
+// ================= этапы =================
+const STAGES = [
+  { type: 'wave', label: 'Волна 1 — Окраины', spawn: [['slime', 6], ['bat', 4]] },
+  { type: 'boss', boss: 'slimeKing' },
+  { type: 'wave', label: 'Волна 2 — Руины', spawn: [['bat', 5], ['cultist', 6]] },
+  { type: 'boss', boss: 'guardian' },
+  { type: 'wave', label: 'Волна 3 — Некрополь', spawn: [['cultist', 5], ['skeleton', 6]] },
+  { type: 'boss', boss: 'lich' },
+];
+
+function startStage(i) {
+  stageIdx = i;
+  const st = STAGES[i];
+  if (st.type === 'wave') {
+    for (const [kind, n] of st.spawn) for (let j = 0; j < n; j++) spawnWaveEnemy(kind);
+    banner = { text: st.label, sub: 'Зачистите волну', t: 2.6 };
+    Music.setBoss(false);
+  } else {
+    spawnBoss(st.boss);
+    banner = { text: boss.name, sub: 'Босс ' + (Math.floor(i / 2) + 1) + ' из 3', t: 2.8 };
+    Music.setBoss(true);
+  }
+}
+
+// ================= игрок =================
+function startRun(clsKey) {
+  Music.ensure();
+  const cls = CLASSES[clsKey];
+  player = {
+    cls, x: WORLD / 2, y: WORLD * 0.78, r: 14,
+    hp: cls.hp, maxHp: cls.hp, dmg: cls.dmg, speed: cls.speed,
+    level: 1, xp: 0, xpNeed: 25,
+    fireT: 0, abilityT: 0, inv: 0,
+  };
+  bullets = []; ebullets = []; enemies = []; drops = []; particles = [];
+  boss = null; nextT = 0; runTime = 0; killCount = 0; shake = 0;
+  document.getElementById('menu').classList.add('hidden');
+  document.getElementById('gameover').classList.add('hidden');
+  document.getElementById('victory').classList.add('hidden');
+  state = 'play';
+  startStage(0);
+}
+window.startRun = startRun;
+
+function toMenu() {
+  state = 'menu';
+  Music.setBoss(false);
+  document.getElementById('gameover').classList.add('hidden');
+  document.getElementById('victory').classList.add('hidden');
+  document.getElementById('menu').classList.remove('hidden');
+}
+window.toMenu = toMenu;
+
+function gainXp(n) {
+  player.xp += n;
+  while (player.xp >= player.xpNeed) {
+    player.xp -= player.xpNeed;
+    player.level++;
+    player.xpNeed = 25 + (player.level - 1) * 18;
+    player.maxHp += 14;
+    player.dmg *= 1.07;
+    player.hp = Math.min(player.maxHp, player.hp + player.maxHp * 0.45);
+    Music.sfx('levelup');
+    banner = { text: 'Уровень ' + player.level + '!', sub: '', t: 1.4, small: true };
+    burst(player.x, player.y, 20, '#f4d47c');
+  }
+}
+
+function hurtPlayer(dmg) {
+  if (player.inv > 0 || state !== 'play') return;
+  player.hp -= dmg;
+  player.inv = 0.6;
+  shake = Math.max(shake, 7);
+  Music.sfx('hurt');
+  burst(player.x, player.y, 8, '#e86a5e');
+  if (player.hp <= 0) {
+    player.hp = 0;
+    state = 'dead';
+    Music.setBoss(false);
+    const st = STAGES[stageIdx];
+    const where = st.type === 'boss' ? 'в бою с боссом «' + boss.name + '»' : 'на этапе «' + st.label + '»';
+    document.getElementById('deathStats').textContent =
+      `${player.cls.name} пал ${where}\nУровень: ${player.level} · Убийств: ${killCount} · Время: ${fmtTime(runTime)}`;
+    document.getElementById('gameover').classList.remove('hidden');
+  }
+}
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60), ss = Math.floor(s % 60);
+  return m + ':' + String(ss).padStart(2, '0');
+}
+
+// ================= умения =================
+function useAbility() {
+  if (state !== 'play' || !player || player.abilityT > 0) return;
+  const cls = player.cls;
+  player.abilityT = cls.abilityCd;
+  const aim = aimAngle();
+  Music.sfx('ability');
+
+  if (cls.key === 'warrior') {
+    player.x = clamp(player.x + Math.cos(aim) * 160, player.r, WORLD - player.r);
+    player.y = clamp(player.y + Math.sin(aim) * 160, player.r, WORLD - player.r);
+    player.inv = Math.max(player.inv, 0.4);
+    burst(player.x, player.y, 26, cls.color);
+    shake = Math.max(shake, 6);
+    const dmg = player.dmg * 2.4, R = 130;
+    for (const e of enemies) {
+      if (dist2(e.x, e.y, player.x, player.y) < (R + e.r) ** 2) {
+        e.hp -= dmg;
+        const ka = Math.atan2(e.y - player.y, e.x - player.x);
+        e.x = clamp(e.x + Math.cos(ka) * 80, e.r, WORLD - e.r);
+        e.y = clamp(e.y + Math.sin(ka) * 80, e.r, WORLD - e.r);
+      }
+    }
+    if (boss && dist2(boss.x, boss.y, player.x, player.y) < (R + boss.r) ** 2) boss.hp -= dmg;
+  } else if (cls.key === 'archer') {
+    for (let i = 0; i < 7; i++) {
+      const a = aim - 0.25 + (i / 6) * 0.5;
+      spawnBullet(a, cls.projSpeed * 1.1, player.dmg * 1.25, 6, 470, 3);
+    }
+  } else if (cls.key === 'wizard') {
+    for (let i = 0; i < 22; i++) {
+      spawnBullet((i / 22) * TAU, 380, player.dmg * 1.15, 6, 300, 0);
+    }
+  }
+}
+
+function aimAngle() {
+  return Math.atan2(mouse.y + cam.y - player.y, mouse.x + cam.x - player.x);
+}
+
+function spawnBullet(ang, speed, dmg, r, range, pierce) {
+  bullets.push({
+    x: player.x, y: player.y,
+    vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
+    r, dmg, pierce, life: range / speed, color: player.cls.color,
+  });
+}
+
+// ================= частицы =================
+function burst(x, y, n, color) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, TAU), s = rand(40, 220);
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: rand(0.25, 0.6), maxLife: 0.6, color, r: rand(2, 5) });
+  }
+}
+
+// ================= обновление =================
+function update(dt) {
+  runTime += dt;
+  gameTime += dt;
+  const cls = player.cls;
+
+  // движение игрока
+  let mx = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+  let my = (keys.KeyS || keys.ArrowDown ? 1 : 0) - (keys.KeyW || keys.ArrowUp ? 1 : 0);
+  if (mx || my) {
+    const l = Math.hypot(mx, my);
+    player.x = clamp(player.x + (mx / l) * player.speed * dt, player.r, WORLD - player.r);
+    player.y = clamp(player.y + (my / l) * player.speed * dt, player.r, WORLD - player.r);
+  }
+  player.inv = Math.max(0, player.inv - dt);
+  player.abilityT = Math.max(0, player.abilityT - dt);
+  player.fireT -= dt;
+  player.hp = Math.min(player.maxHp, player.hp + 1.3 * dt);
+
+  // стрельба
+  if (mouse.down && player.fireT <= 0) {
+    player.fireT = 1 / cls.fireRate;
+    const aim = aimAngle();
+    for (let i = 0; i < cls.shots; i++) {
+      const off = cls.shots === 1 ? 0 : -cls.spread / 2 + (i / (cls.shots - 1)) * cls.spread;
+      spawnBullet(aim + off, cls.projSpeed, player.dmg, cls.projR, cls.range, cls.pierce);
+    }
+    Music.sfx('shoot');
+  }
+
+  // камера
+  cam.x = WORLD <= W ? (WORLD - W) / 2 : clamp(player.x - W / 2, 0, WORLD - W);
+  cam.y = WORLD <= H ? (WORLD - H) / 2 : clamp(player.y - H / 2, 0, WORLD - H);
+  shake = Math.max(0, shake - dt * 22);
+
+  // враги
+  for (const e of enemies) {
+    const k = e.k;
+    const a = Math.atan2(player.y - e.y, player.x - e.x);
+    const d = Math.sqrt(dist2(e.x, e.y, player.x, player.y));
+    let vx = 0, vy = 0;
+
+    if (k.behavior === 'chase') {
+      vx = Math.cos(a) * k.speed;
+      vy = Math.sin(a) * k.speed;
+      if (k.wobble) {
+        const w = Math.sin(gameTime * 9 + e.seed) * 90;
+        vx += Math.cos(a + Math.PI / 2) * w;
+        vy += Math.sin(a + Math.PI / 2) * w;
+      }
+    } else {
+      // стрелки держат дистанцию ~270
+      if (d > 300) { vx = Math.cos(a) * k.speed; vy = Math.sin(a) * k.speed; }
+      else if (d < 230) { vx = -Math.cos(a) * k.speed; vy = -Math.sin(a) * k.speed; }
+      else { vx = Math.cos(a + Math.PI / 2) * k.speed * 0.6 * e.strafeDir; vy = Math.sin(a + Math.PI / 2) * k.speed * 0.6 * e.strafeDir; }
+      e.shootT -= dt;
+      if (e.shootT <= 0 && d < 540) {
+        e.shootT = k.shootCd;
+        if (k.behavior === 'shoot') {
+          ebullets.push({ x: e.x, y: e.y, vx: Math.cos(a) * k.bSpeed, vy: Math.sin(a) * k.bSpeed, r: 6, dmg: k.bDmg, color: k.color, life: 6 });
+        } else {
+          for (let i = -1; i <= 1; i++) {
+            const aa = a + i * 0.22;
+            ebullets.push({ x: e.x, y: e.y, vx: Math.cos(aa) * k.bSpeed, vy: Math.sin(aa) * k.bSpeed, r: 6, dmg: k.bDmg, color: k.color, life: 6 });
+          }
+        }
+      }
+    }
+    e.x = clamp(e.x + vx * dt, e.r, WORLD - e.r);
+    e.y = clamp(e.y + vy * dt, e.r, WORLD - e.r);
+
+    // контактный урон
+    e.touchT = Math.max(0, e.touchT - dt);
+    if (e.touchT <= 0 && dist2(e.x, e.y, player.x, player.y) < (e.r + player.r) ** 2) {
+      e.touchT = 0.8;
+      hurtPlayer(k.dmg);
+    }
+  }
+
+  // расталкивание врагов
+  for (let i = 0; i < enemies.length; i++) {
+    for (let j = i + 1; j < enemies.length; j++) {
+      const a = enemies[i], b = enemies[j];
+      const dd = dist2(a.x, a.y, b.x, b.y), min = a.r + b.r;
+      if (dd > 0 && dd < min * min) {
+        const d = Math.sqrt(dd), push = (min - d) / 2;
+        const nx = (b.x - a.x) / d, ny = (b.y - a.y) / d;
+        a.x -= nx * push; a.y -= ny * push;
+        b.x += nx * push; b.y += ny * push;
+      }
+    }
+  }
+
+  // босс
+  if (boss) {
+    boss.def.update(boss, dt);
+    boss.touchT = Math.max(0, boss.touchT - dt);
+    if (boss.touchT <= 0 && dist2(boss.x, boss.y, player.x, player.y) < (boss.r + player.r) ** 2) {
+      boss.touchT = 0.8;
+      hurtPlayer(boss.def.contact);
+    }
+  }
+
+  // пули игрока
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
+    let dead = b.life <= 0 || b.x < 0 || b.x > WORLD || b.y < 0 || b.y > WORLD;
+
+    if (!dead) {
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (dist2(b.x, b.y, e.x, e.y) < (b.r + e.r) ** 2) {
+          e.hp -= b.dmg;
+          burst(b.x, b.y, 3, e.k.color);
+          Music.sfx('hit');
+          if (b.pierce > 0) b.pierce--; else { dead = true; }
+          if (dead) break;
+        }
+      }
+    }
+    if (!dead && boss && dist2(b.x, b.y, boss.x, boss.y) < (b.r + boss.r) ** 2) {
+      boss.hp -= b.dmg;
+      burst(b.x, b.y, 3, boss.color);
+      Music.sfx('hit');
+      dead = true;
+    }
+    if (dead) bullets.splice(i, 1);
+  }
+
+  // смерть врагов
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    if (e.hp <= 0) {
+      killCount++;
+      gainXp(e.k.xp);
+      burst(e.x, e.y, 10, e.k.color);
+      if (Math.random() < 0.22) drops.push({ x: e.x, y: e.y });
+      enemies.splice(i, 1);
+    }
+  }
+
+  // смерть босса
+  if (boss && boss.hp <= 0) {
+    killCount++;
+    gainXp(boss.def.xp);
+    burst(boss.x, boss.y, 60, boss.color);
+    burst(boss.x, boss.y, 40, '#f4d47c');
+    for (let i = 0; i < 3; i++) drops.push({ x: boss.x + rand(-50, 50), y: boss.y + rand(-50, 50) });
+    shake = Math.max(shake, 14);
+    Music.sfx('explode');
+    Music.setBoss(false);
+    // миньоны босса гибнут вместе с ним
+    for (const e of enemies) burst(e.x, e.y, 8, e.k.color);
+    enemies = [];
+    ebullets = [];
+    boss = null;
+  }
+
+  // пули врагов
+  for (let i = ebullets.length - 1; i >= 0; i--) {
+    const b = ebullets[i];
+    b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
+    let dead = b.life <= 0 || b.x < -40 || b.x > WORLD + 40 || b.y < -40 || b.y > WORLD + 40;
+    if (!dead && dist2(b.x, b.y, player.x, player.y) < (b.r + player.r) ** 2) {
+      hurtPlayer(b.dmg);
+      dead = true;
+    }
+    if (dead) ebullets.splice(i, 1);
+  }
+
+  // зелья
+  for (let i = drops.length - 1; i >= 0; i--) {
+    const d = drops[i];
+    if (dist2(d.x, d.y, player.x, player.y) < 26 * 26) {
+      player.hp = Math.min(player.maxHp, player.hp + 30);
+      Music.sfx('pickup');
+      burst(d.x, d.y, 8, '#e86a5e');
+      drops.splice(i, 1);
+    }
+  }
+
+  // частицы
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= 0.92; p.vy *= 0.92;
+    p.life -= dt;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
+
+  // менеджер этапов
+  if (state === 'play') {
+    const st = STAGES[stageIdx];
+    const cleared = st.type === 'wave' ? enemies.length === 0 : boss === null;
+    if (nextT > 0) {
+      nextT -= dt;
+      if (nextT <= 0) {
+        if (stageIdx + 1 >= STAGES.length) {
+          state = 'win';
+          document.getElementById('winStats').textContent =
+            `${player.cls.name} · Уровень ${player.level} · Убийств: ${killCount} · Время: ${fmtTime(runTime)}`;
+          document.getElementById('victory').classList.remove('hidden');
+        } else {
+          startStage(stageIdx + 1);
+        }
+      }
+    } else if (cleared) {
+      nextT = 1.6;
+    }
+  }
+}
+
+// ================= отрисовка =================
+function draw() {
+  ctx.fillStyle = '#0c1014';
+  ctx.fillRect(0, 0, W, H);
+
+  const sx = shake > 0 ? rand(-shake, shake) : 0;
+  const sy = shake > 0 ? rand(-shake, shake) : 0;
+
+  ctx.save();
+  ctx.translate(-cam.x + sx, -cam.y + sy);
+
+  // пол мира
+  ctx.fillStyle = '#12181f';
+  ctx.fillRect(0, 0, WORLD, WORLD);
+  ctx.strokeStyle = '#1a232d';
+  ctx.lineWidth = 1;
+  const gs = 100;
+  const x0 = Math.max(0, Math.floor(cam.x / gs) * gs), x1 = Math.min(WORLD, cam.x + W);
+  const y0 = Math.max(0, Math.floor(cam.y / gs) * gs), y1 = Math.min(WORLD, cam.y + H);
+  ctx.beginPath();
+  for (let x = x0; x <= x1; x += gs) { ctx.moveTo(x, Math.max(0, cam.y)); ctx.lineTo(x, y1); }
+  for (let y = y0; y <= y1; y += gs) { ctx.moveTo(Math.max(0, cam.x), y); ctx.lineTo(x1, y); }
+  ctx.stroke();
+  // стены
+  ctx.strokeStyle = '#33465c';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(3, 3, WORLD - 6, WORLD - 6);
+
+  if (player) {
+    // зелья
+    for (const d of drops) {
+      ctx.fillStyle = '#c94b41';
+      ctx.beginPath(); ctx.arc(d.x, d.y, 9, 0, TAU); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(d.x - 4, d.y); ctx.lineTo(d.x + 4, d.y);
+      ctx.moveTo(d.x, d.y - 4); ctx.lineTo(d.x, d.y + 4);
+      ctx.stroke();
+    }
+
+    // враги
+    for (const e of enemies) drawCreature(e.x, e.y, e.r, e.k.color, e.hp, e.maxHp);
+
+    // босс
+    if (boss) {
+      const pulse = 1 + Math.sin(gameTime * 4) * 0.04;
+      drawCreature(boss.x, boss.y, boss.r * pulse, boss.color, boss.hp, boss.maxHp, true);
+      // декор по типу босса
+      ctx.save();
+      ctx.translate(boss.x, boss.y);
+      if (boss.key === 'slimeKing') {
+        ctx.fillStyle = '#f4d47c';
+        for (let i = -1; i <= 1; i++) {
+          ctx.beginPath();
+          ctx.moveTo(i * 18 - 9, -boss.r - 4);
+          ctx.lineTo(i * 18, -boss.r - 22);
+          ctx.lineTo(i * 18 + 9, -boss.r - 4);
+          ctx.fill();
+        }
+      } else if (boss.key === 'guardian') {
+        ctx.strokeStyle = '#9cc4f0';
+        ctx.lineWidth = 3;
+        for (let i = 0; i < 4; i++) {
+          const a = boss.ang + (i / 4) * TAU;
+          const ox = Math.cos(a) * (boss.r + 18), oy = Math.sin(a) * (boss.r + 18);
+          ctx.save(); ctx.translate(ox, oy); ctx.rotate(a);
+          ctx.strokeRect(-6, -6, 12, 12);
+          ctx.restore();
+        }
+      } else if (boss.key === 'lich') {
+        ctx.strokeStyle = 'rgba(217,168,255,0.5)';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 3; i++) {
+          const a = gameTime * 2 + (i / 3) * TAU;
+          ctx.beginPath();
+          ctx.arc(Math.cos(a) * (boss.r + 16), Math.sin(a) * (boss.r + 16), 6, 0, TAU);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
+    // игрок
+    const inv = player.inv > 0 && Math.floor(gameTime * 14) % 2 === 0;
+    ctx.globalAlpha = inv ? 0.4 : 1;
+    ctx.fillStyle = player.cls.color;
+    ctx.beginPath(); ctx.arc(player.x, player.y, player.r, 0, TAU); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5;
+    ctx.stroke();
+    // указатель прицела
+    const aim = aimAngle();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(player.x + Math.cos(aim) * (player.r + 3), player.y + Math.sin(aim) * (player.r + 3));
+    ctx.lineTo(player.x + Math.cos(aim) * (player.r + 12), player.y + Math.sin(aim) * (player.r + 12));
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // пули игрока
+    for (const b of bullets) {
+      ctx.fillStyle = b.color;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 0.45, 0, TAU); ctx.fill();
+    }
+    // пули врагов
+    for (const b of ebullets) {
+      ctx.fillStyle = b.color;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    // частицы
+    for (const p of particles) {
+      ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
+      ctx.fillStyle = p.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.restore();
+
+  // виньетка
+  const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.max(W, H) * 0.72);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.45)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+
+  if (player && state !== 'menu') drawUI();
+}
+
+function drawCreature(x, y, r, color, hp, maxHp, isBoss = false) {
+  // тень
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.ellipse(x, y + r * 0.85, r * 0.9, r * 0.35, 0, 0, TAU); ctx.fill();
+  // тело
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  ctx.lineWidth = isBoss ? 4 : 2.5;
+  ctx.stroke();
+  // глаза смотрят на игрока
+  if (player) {
+    const a = Math.atan2(player.y - y, player.x - x);
+    const ex = Math.cos(a) * r * 0.35, ey = Math.sin(a) * r * 0.35;
+    const er = Math.max(2.5, r * 0.14);
+    ctx.fillStyle = '#fff';
+    for (const s of [-1, 1]) {
+      const ox = Math.cos(a + Math.PI / 2) * r * 0.32 * s;
+      const oy = Math.sin(a + Math.PI / 2) * r * 0.32 * s;
+      ctx.beginPath(); ctx.arc(x + ex + ox, y + ey + oy, er, 0, TAU); ctx.fill();
+    }
+    ctx.fillStyle = '#1a1a24';
+    for (const s of [-1, 1]) {
+      const ox = Math.cos(a + Math.PI / 2) * r * 0.32 * s;
+      const oy = Math.sin(a + Math.PI / 2) * r * 0.32 * s;
+      ctx.beginPath(); ctx.arc(x + ex * 1.15 + ox, y + ey * 1.15 + oy, er * 0.55, 0, TAU); ctx.fill();
+    }
+  }
+  // полоска HP (миньонам — только если ранены)
+  if (!isBoss && hp < maxHp) {
+    const w = r * 2;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(x - w / 2, y - r - 12, w, 5);
+    ctx.fillStyle = '#e86a5e';
+    ctx.fillRect(x - w / 2, y - r - 12, w * clamp(hp / maxHp, 0, 1), 5);
+  }
+}
+
+function bar(x, y, w, h, frac, fg, bg) {
+  ctx.fillStyle = bg;
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = fg;
+  ctx.fillRect(x, y, w * clamp(frac, 0, 1), h);
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+}
+
+function drawUI() {
+  ctx.textBaseline = 'middle';
+
+  // HP / XP
+  bar(18, 18, 230, 20, player.hp / player.maxHp, '#c94b41', 'rgba(0,0,0,0.55)');
+  ctx.fillStyle = '#fff';
+  ctx.font = '12px system-ui';
+  ctx.textAlign = 'center';
+  ctx.fillText(Math.ceil(player.hp) + ' / ' + Math.ceil(player.maxHp), 18 + 115, 28);
+  bar(18, 42, 230, 10, player.xp / player.xpNeed, '#f4d47c', 'rgba(0,0,0,0.55)');
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#cdd8e4';
+  ctx.font = '13px system-ui';
+  ctx.fillText(player.cls.name + ' · ур. ' + player.level, 18, 66);
+
+  // умение
+  const cd = player.abilityT;
+  bar(18, 80, 230, 12, 1 - cd / player.cls.abilityCd, cd > 0 ? '#5a8fd8' : '#7ac74f', 'rgba(0,0,0,0.55)');
+  ctx.fillStyle = '#9fb0c3';
+  ctx.font = '11px system-ui';
+  ctx.fillText(player.cls.abilityName + (cd > 0 ? ' · ' + cd.toFixed(1) + 'с' : ' — готово [Space]'), 18, 102);
+
+  // этап + звук
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#9fb0c3';
+  ctx.font = '13px system-ui';
+  ctx.fillText('Этап ' + (stageIdx + 1) + ' / ' + STAGES.length, W - 18, 26);
+  ctx.fillStyle = '#66788e';
+  ctx.font = '11px system-ui';
+  ctx.fillText('M · звук: ' + (Music.isMuted() ? 'выкл' : 'вкл'), W - 18, 46);
+  ctx.fillText(fmtTime(runTime), W - 18, 64);
+
+  // HP босса
+  if (boss) {
+    const bw = Math.min(430, W * 0.5);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f0d9ff';
+    ctx.font = 'bold 15px system-ui';
+    ctx.fillText(boss.name, W / 2, 26);
+    bar(W / 2 - bw / 2, 38, bw, 14, boss.hp / boss.maxHp, boss.color, 'rgba(0,0,0,0.6)');
+  }
+
+  // баннер этапа
+  if (banner) {
+    const a = clamp(banner.t / 0.5, 0, 1);
+    ctx.globalAlpha = a;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f4d47c';
+    ctx.font = 'bold ' + (banner.small ? 26 : 40) + 'px system-ui';
+    ctx.fillText(banner.text, W / 2, H * 0.32);
+    if (banner.sub) {
+      ctx.fillStyle = '#9fb0c3';
+      ctx.font = '16px system-ui';
+      ctx.fillText(banner.sub, W / 2, H * 0.32 + 36);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  if (state === 'pause') {
+    ctx.fillStyle = 'rgba(8,11,15,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#dfe6ee';
+    ctx.font = 'bold 34px system-ui';
+    ctx.fillText('Пауза', W / 2, H / 2 - 10);
+    ctx.font = '15px system-ui';
+    ctx.fillStyle = '#9fb0c3';
+    ctx.fillText('P — продолжить', W / 2, H / 2 + 26);
+  }
+
+  ctx.textAlign = 'left';
+}
+
+// ================= цикл =================
+let last = performance.now();
+function frame(t) {
+  const dt = Math.min(0.033, (t - last) / 1000);
+  last = t;
+  if (state === 'play') update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);

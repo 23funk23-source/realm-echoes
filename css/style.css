@@ -1,0 +1,80 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: #0c1014;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #dfe6ee;
+}
+
+#game { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+
+.overlay {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 22px;
+  background: rgba(8, 11, 15, 0.86);
+  backdrop-filter: blur(4px);
+  text-align: center;
+  padding: 24px;
+  z-index: 10;
+}
+.overlay.hidden { display: none; }
+
+h1 {
+  font-size: 52px;
+  letter-spacing: 2px;
+  color: #f4d47c;
+  text-shadow: 0 0 24px rgba(244, 212, 124, 0.35);
+}
+h1.red  { color: #e86a5e; text-shadow: 0 0 24px rgba(232, 106, 94, 0.35); }
+h1.gold { color: #ffd85e; text-shadow: 0 0 28px rgba(255, 216, 94, 0.5); }
+
+.tagline { max-width: 560px; color: #9fb0c3; font-size: 16px; line-height: 1.5; }
+.stats   { color: #cdd8e4; font-size: 17px; line-height: 1.7; white-space: pre-line; }
+.hint    { color: #7c8ea3; font-size: 14px; }
+.hint.dim { color: #55657a; font-size: 12px; }
+
+.cards { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
+
+.card {
+  width: 218px;
+  padding: 18px 16px;
+  background: #141b23;
+  border: 1px solid #263242;
+  border-radius: 14px;
+  color: #dfe6ee;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.card:hover { transform: translateY(-4px); }
+.card.warrior:hover { border-color: #e8843c; box-shadow: 0 6px 28px rgba(232, 132, 60, 0.25); }
+.card.archer:hover  { border-color: #7ac74f; box-shadow: 0 6px 28px rgba(122, 199, 79, 0.25); }
+.card.wizard:hover  { border-color: #8f7ae8; box-shadow: 0 6px 28px rgba(143, 122, 232, 0.25); }
+
+.card-icon {
+  display: block;
+  font-size: 34px;
+  color: var(--c);
+  margin-bottom: 6px;
+  text-shadow: 0 0 14px var(--c);
+}
+.card-name { display: block; font-size: 20px; font-weight: 700; margin-bottom: 10px; }
+.card ul { list-style: none; }
+.card li { font-size: 13px; color: #9fb0c3; line-height: 1.6; }
+
+.btn {
+  padding: 12px 34px;
+  font-size: 17px;
+  font-weight: 600;
+  color: #10151c;
+  background: #f4d47c;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.btn:hover { transform: translateY(-2px); box-shadow: 0 6px 22px rgba(244, 212, 124, 0.35); }
