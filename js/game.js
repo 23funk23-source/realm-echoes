@@ -50,24 +50,120 @@ addEventListener('blur', () => { mouse.down = false; });
 // ================= классы =================
 const CLASSES = {
   warrior: {
-    key: 'warrior', name: 'Воин', color: '#e8843c',
-    hp: 160, speed: 215, dmg: 24, fireRate: 2.6, projSpeed: 430, range: 195,
+    key: 'warrior', name: 'Воин', color: '#d8503c',
+    hp: 160, speed: 265, dmg: 24, fireRate: 2.6, projSpeed: 430, range: 195,
     projR: 7, shots: 1, spread: 0, pierce: 0,
     abilityCd: 5, abilityName: 'Рывок-удар',
   },
   archer: {
-    key: 'archer', name: 'Лучник', color: '#7ac74f',
-    hp: 105, speed: 245, dmg: 17, fireRate: 3.4, projSpeed: 580, range: 430,
+    key: 'archer', name: 'Лучник', color: '#6aa8e8',
+    hp: 105, speed: 300, dmg: 17, fireRate: 3.4, projSpeed: 580, range: 430,
     projR: 5, shots: 1, spread: 0, pierce: 1,
     abilityCd: 6, abilityName: 'Веер стрел',
   },
   wizard: {
-    key: 'wizard', name: 'Маг', color: '#8f7ae8',
-    hp: 90, speed: 228, dmg: 12, fireRate: 5, projSpeed: 520, range: 350,
+    key: 'wizard', name: 'Маг', color: '#a878e0',
+    hp: 90, speed: 285, dmg: 12, fireRate: 5, projSpeed: 520, range: 350,
     projR: 5, shots: 2, spread: 0.14, pierce: 0,
     abilityCd: 7, abilityName: 'Нова',
   },
 };
+
+// ================= пиксельные спрайты классов =================
+// 16x16, '.' — прозрачный пиксель; палитры по референсам:
+// Воин — красно-чёрный с золотом, Лучник — сине-серебряный с крылатым шлемом,
+// Маг — фиолетово-белый с золотом.
+const SPRITES = {
+  warrior: {
+    pal: { R: '#c03028', r: '#e05848', D: '#701f18', G: '#d8a030', g: '#f4d060', K: '#241a18', O: '#ff9838' },
+    grid: [
+      '......gGGg.....O',
+      '..g..gRRRRg....O',
+      '.gRg.GRRRRG.gRgO',
+      '.gRggGRRRRGggRgG',
+      '..RgGRKKKKRGgR.G',
+      '...gGKOOOOKGg..G',
+      '....GRKKKKRG...G',
+      '..RRGGGGGGGGRR.G',
+      '.RRgKKRRRRKKgRRG',
+      '.RRgKRGGGGRKgRRG',
+      '.RR.KRGDDGRK.RRG',
+      '.RR.KRRDDRRK.RRG',
+      '..R.KKR..RKK.R.G',
+      '...GKK....KKG...',
+      '...GGg....gGG...',
+      '................',
+    ],
+  },
+  archer: {
+    pal: { B: '#4a72c4', b: '#7aa2e8', N: '#2c4a86', S: '#d8dce4', s: '#f6f8fc', G: '#d8a840', g: '#f4d878', K: '#28303c', F: '#e8c498' },
+    grid: [
+      '......SSSS....g.',
+      '..s..SbbbbS..gGg',
+      '.ss.SbbbbbbS..G.',
+      '.sSSbbSSSSbbSSG.',
+      '..SSbFFFFFFbSSG.',
+      '...SbFKFFKFbS.G.',
+      '....BFFFFFFB..G.',
+      '..BBBBBBBBBBB.G.',
+      '.BBbBBNBBNBBb.G.',
+      '.BBbBNBBBBNBb.G.',
+      '.BB.BGGggGGB..G.',
+      '..B.BBBNNBBB..G.',
+      '....BBB..BBB..G.',
+      '...GGB....BGG...',
+      '...GGs....sGG...',
+      '................',
+    ],
+  },
+  wizard: {
+    pal: { P: '#7a4ab0', p: '#a878e0', L: '#d0b8f0', W: '#ece8f4', G: '#d8a840', g: '#f4d878', K: '#241c30', E: '#c060ff' },
+    grid: [
+      '..g....gg....g..',
+      '.gWg..WWWW..gWg.',
+      '.gWWWWWWWWWWWg..',
+      '..WWWWWWWWWWW.gg',
+      '...WPKPPPPKPW.gg',
+      '...WPEPPPPEPW.G.',
+      '....PKKKKKKP..G.',
+      '..WPPPPPPPPPW.G.',
+      '.WWpPGPPPPGPpWG.',
+      '.WWpPPGGGGPPpWG.',
+      '.WW.PGPLLPGP.WG.',
+      '..W.PPGLLGPP.WG.',
+      '....PPP..PPP..G.',
+      '...GPP....PPG...',
+      '...GGL....LGG...',
+      '................',
+    ],
+  },
+};
+
+function makeSprite(def) {
+  const c = document.createElement('canvas');
+  c.width = 16; c.height = 16;
+  const g = c.getContext('2d');
+  def.grid.forEach((row, y) => {
+    for (let x = 0; x < Math.min(row.length, 16); x++) {
+      const col = def.pal[row[x]];
+      if (!col) continue;
+      g.fillStyle = col;
+      g.fillRect(x, y, 1, 1);
+    }
+  });
+  return c;
+}
+const sprites = {};
+for (const k in SPRITES) sprites[k] = makeSprite(SPRITES[k]);
+
+// превью спрайтов в карточках меню
+document.querySelectorAll('.card-sprite').forEach(c => {
+  const s = sprites[c.dataset.cls];
+  if (!s) return;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  g.drawImage(s, 0, 0, c.width, c.height);
+});
 
 // ================= враги =================
 const KINDS = {
@@ -241,7 +337,7 @@ function startRun(clsKey) {
     cls, x: WORLD / 2, y: WORLD * 0.78, r: 14,
     hp: cls.hp, maxHp: cls.hp, dmg: cls.dmg, speed: cls.speed,
     level: 1, xp: 0, xpNeed: 25,
-    fireT: 0, abilityT: 0, inv: 0,
+    fireT: 0, abilityT: 0, inv: 0, aimDir: -Math.PI / 2,
   };
   bullets = []; ebullets = []; enemies = []; drops = []; particles = [];
   boss = null; nextT = 0; runTime = 0; killCount = 0; shake = 0;
@@ -376,15 +472,33 @@ function update(dt) {
   player.fireT -= dt;
   player.hp = Math.min(player.maxHp, player.hp + 1.3 * dt);
 
-  // стрельба
-  if (mouse.down && player.fireT <= 0) {
-    player.fireT = 1 / cls.fireRate;
-    const aim = aimAngle();
-    for (let i = 0; i < cls.shots; i++) {
-      const off = cls.shots === 1 ? 0 : -cls.spread / 2 + (i / (cls.shots - 1)) * cls.spread;
-      spawnBullet(aim + off, cls.projSpeed, player.dmg, cls.projR, cls.range, cls.pierce);
+  // стрельба: автоатака по ближайшей цели, зажатая ЛКМ — ручное прицеливание
+  let fireAng = null;
+  if (mouse.down) {
+    fireAng = aimAngle();
+  } else {
+    const R = cls.range + 80;
+    let best = Infinity, tx = 0, ty = 0, found = false;
+    for (const e of enemies) {
+      const d = dist2(e.x, e.y, player.x, player.y);
+      if (d < best && d < (R + e.r) ** 2) { best = d; tx = e.x; ty = e.y; found = true; }
     }
-    Music.sfx('shoot');
+    if (boss) {
+      const d = dist2(boss.x, boss.y, player.x, player.y);
+      if (d < best && d < (R + boss.r) ** 2) { tx = boss.x; ty = boss.y; found = true; }
+    }
+    if (found) fireAng = Math.atan2(ty - player.y, tx - player.x);
+  }
+  if (fireAng !== null) {
+    player.aimDir = fireAng;
+    if (player.fireT <= 0) {
+      player.fireT = 1 / cls.fireRate;
+      for (let i = 0; i < cls.shots; i++) {
+        const off = cls.shots === 1 ? 0 : -cls.spread / 2 + (i / (cls.shots - 1)) * cls.spread;
+        spawnBullet(fireAng + off, cls.projSpeed, player.dmg, cls.projR, cls.range, cls.pierce);
+      }
+      Music.sfx('shoot');
+    }
   }
 
   // камера
@@ -657,12 +771,14 @@ function draw() {
     // игрок
     const inv = player.inv > 0 && Math.floor(gameTime * 14) % 2 === 0;
     ctx.globalAlpha = inv ? 0.4 : 1;
-    ctx.fillStyle = player.cls.color;
-    ctx.beginPath(); ctx.arc(player.x, player.y, player.r, 0, TAU); ctx.fill();
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5;
-    ctx.stroke();
-    // указатель прицела
-    const aim = aimAngle();
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.ellipse(player.x, player.y + 16, 15, 6, 0, 0, TAU); ctx.fill();
+    const bob = Math.sin(gameTime * 6) * 2;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(sprites[player.cls.key], Math.round(player.x - 22), Math.round(player.y - 30 + bob), 44, 44);
+    ctx.imageSmoothingEnabled = true;
+    // указатель прицела (направление автоатаки или мыши)
+    const aim = player.aimDir !== undefined ? player.aimDir : aimAngle();
     ctx.strokeStyle = 'rgba(255,255,255,0.85)';
     ctx.lineWidth = 3;
     ctx.beginPath();

@@ -14,7 +14,7 @@
   <p class="tagline">Мини-рогалик в духе Realm of the Mad God: один забег, три босса, перманентная смерть.</p>
   <div class="cards">
     <button class="card warrior" onclick="startRun('warrior')">
-      <span class="card-icon" style="--c:#e8843c">&#9876;</span>
+      <canvas class="card-sprite" data-cls="warrior" width="80" height="80"></canvas>
       <span class="card-name">Воин</span>
       <ul>
         <li>HP: высокое (160)</li>
@@ -23,16 +23,16 @@
       </ul>
     </button>
     <button class="card archer" onclick="startRun('archer')">
-      <span class="card-icon" style="--c:#7ac74f">&#10148;</span>
+      <canvas class="card-sprite" data-cls="archer" width="80" height="80"></canvas>
       <span class="card-name">Лучник</span>
       <ul>
-        <li>HP: низкое (105), скорость высокая</li>
+        <li>HP: низкое (105), самый быстрый</li>
         <li>Дальность: длинная, стрелы пробивают</li>
         <li>Умение: веер из 7 стрел</li>
       </ul>
     </button>
     <button class="card wizard" onclick="startRun('wizard')">
-      <span class="card-icon" style="--c:#8f7ae8">&#10038;</span>
+      <canvas class="card-sprite" data-cls="wizard" width="80" height="80"></canvas>
       <span class="card-name">Маг</span>
       <ul>
         <li>HP: минимальное (90)</li>
@@ -41,7 +41,7 @@
       </ul>
     </button>
   </div>
-  <p class="hint">WASD — движение &middot; мышь — прицел и огонь &middot; Space/ПКМ — умение &middot; M — музыка &middot; P — пауза</p>
+  <p class="hint">WASD — движение &middot; атака — автоматически по ближайшему врагу &middot; зажать ЛКМ — ручной прицел &middot; Space/ПКМ — умение &middot; M — музыка &middot; P — пауза</p>
   <p class="hint dim">Звук включится после выбора класса</p>
 </div>
 

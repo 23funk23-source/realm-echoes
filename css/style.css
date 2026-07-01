@@ -51,16 +51,16 @@ h1.gold { color: #ffd85e; text-shadow: 0 0 28px rgba(255, 216, 94, 0.5); }
   transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 }
 .card:hover { transform: translateY(-4px); }
-.card.warrior:hover { border-color: #e8843c; box-shadow: 0 6px 28px rgba(232, 132, 60, 0.25); }
-.card.archer:hover  { border-color: #7ac74f; box-shadow: 0 6px 28px rgba(122, 199, 79, 0.25); }
-.card.wizard:hover  { border-color: #8f7ae8; box-shadow: 0 6px 28px rgba(143, 122, 232, 0.25); }
+.card.warrior:hover { border-color: #d8503c; box-shadow: 0 6px 28px rgba(216, 80, 60, 0.25); }
+.card.archer:hover  { border-color: #6aa8e8; box-shadow: 0 6px 28px rgba(106, 168, 232, 0.25); }
+.card.wizard:hover  { border-color: #a878e0; box-shadow: 0 6px 28px rgba(168, 120, 224, 0.25); }
 
-.card-icon {
+.card-sprite {
   display: block;
-  font-size: 34px;
-  color: var(--c);
-  margin-bottom: 6px;
-  text-shadow: 0 0 14px var(--c);
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 8px;
+  image-rendering: pixelated;
 }
 .card-name { display: block; font-size: 20px; font-weight: 700; margin-bottom: 10px; }
 .card ul { list-style: none; }
