@@ -22,6 +22,7 @@ let player = null;
 let bullets = [], ebullets = [], enemies = [], drops = [], particles = [];
 let boss = null;
 let cam = { x: 0, y: 0 };
+let portal = null, dungeonReturn = null, lavaPools = [];
 let stageIdx = 0, nextT = 0, banner = null, shake = 0;
 let runTime = 0, killCount = 0, gameTime = 0;
 
@@ -171,6 +172,10 @@ const KINDS = {
   bat:      { r: 11, hp: 18, speed: 155, dmg: 8,  xp: 6,  color: '#a06adf', behavior: 'chase', wobble: true },
   cultist:  { r: 14, hp: 28, speed: 95,  dmg: 10, xp: 10, color: '#d85c5c', behavior: 'shoot',  shootCd: 1.9, bSpeed: 235, bDmg: 11 },
   skeleton: { r: 15, hp: 38, speed: 80,  dmg: 12, xp: 12, color: '#cfd2d8', behavior: 'shoot3', shootCd: 2.3, bSpeed: 205, bDmg: 9 },
+  // обитатели огненного данжа
+  imp:        { r: 11, hp: 26, speed: 175, dmg: 9,  xp: 12, color: '#ff8838', behavior: 'chase', wobble: true },
+  salamander: { r: 14, hp: 34, speed: 105, dmg: 11, xp: 14, color: '#e8543c', behavior: 'shoot',  shootCd: 1.6, bSpeed: 280, bDmg: 12 },
+  magmaGolem: { r: 20, hp: 64, speed: 48,  dmg: 16, xp: 18, color: '#c8742c', behavior: 'ring',   shootCd: 2.8, bSpeed: 115, bDmg: 11 },
 };
 
 function spawnEnemy(kindKey, x, y) {
@@ -261,6 +266,43 @@ const BOSSDEFS = {
       }
     },
   },
+  flameLord: {
+    name: 'Повелитель Пламени', hp: 1400, r: 46, color: '#ff6a2a', speed: 55,
+    contact: 16, xp: 260, bColor: '#ffb066',
+    init(b) { b.ang = 0; b.tSpiral = 0; b.tWave = 3; b.tImp = 6; },
+    update(b, dt) {
+      const a = Math.atan2(player.y - b.y, player.x - b.x);
+      b.x += Math.cos(a) * b.speed * dt;
+      b.y += Math.sin(a) * b.speed * dt;
+      const enraged = b.hp < b.maxHp * 0.4;
+      // огненная спираль
+      b.ang += dt * 3.4;
+      b.tSpiral -= dt;
+      if (b.tSpiral <= 0) {
+        b.tSpiral = enraged ? 0.08 : 0.11;
+        const arms = enraged ? 3 : 2;
+        for (let i = 0; i < arms; i++) {
+          const aa = b.ang + (i / arms) * TAU;
+          ebullets.push({ x: b.x, y: b.y, vx: Math.cos(aa) * 200, vy: Math.sin(aa) * 200, r: 7, dmg: 13, color: this.bColor, life: 9 });
+        }
+      }
+      // волна жара — медленное расширяющееся кольцо
+      b.tWave -= dt;
+      if (b.tWave <= 0) {
+        b.tWave = enraged ? 2.8 : 4;
+        ering(b.x, b.y, enraged ? 28 : 24, 125, 14, '#ffd060', rand(0, TAU), 9);
+        shake = Math.max(shake, 5);
+      }
+      b.tImp -= dt;
+      if (b.tImp <= 0) {
+        b.tImp = 6;
+        if (enemies.length < 4) {
+          spawnEnemy('imp', b.x + rand(-80, 80), b.y + rand(-80, 80));
+          spawnEnemy('imp', b.x + rand(-80, 80), b.y + rand(-80, 80));
+        }
+      }
+    },
+  },
   lich: {
     name: 'Лич', hp: 1500, r: 40, color: '#b06ee0', speed: 0,
     contact: 15, xp: 300, bColor: '#d9a8ff',
@@ -311,20 +353,43 @@ const STAGES = [
   { type: 'boss', boss: 'slimeKing' },
   { type: 'wave', label: 'Волна 2 — Руины', spawn: [['bat', 5], ['cultist', 6]] },
   { type: 'boss', boss: 'guardian' },
+  { type: 'portal', label: 'Огненный портал' },
+  { type: 'wave', label: 'Данж — Пылающие залы', fire: true, spawn: [['imp', 5], ['salamander', 4], ['magmaGolem', 3]] },
+  { type: 'boss', boss: 'flameLord', fire: true },
   { type: 'wave', label: 'Волна 3 — Некрополь', spawn: [['cultist', 5], ['skeleton', 6]] },
   { type: 'boss', boss: 'lich' },
 ];
+const DUNGEON_SKIP_TO = 7; // портал закрылся — данж пропускается, сразу к Некрополю
+const PORTAL_TIME = 12;
 
 function startStage(i) {
   stageIdx = i;
   const st = STAGES[i];
+  // возвращение из данжа на место входа
+  if (dungeonReturn && !st.fire) {
+    player.x = dungeonReturn.x;
+    player.y = dungeonReturn.y;
+    dungeonReturn = null;
+    lavaPools = [];
+    ebullets = [];
+    Music.sfx('teleport');
+  }
+  if (st.fire && lavaPools.length === 0) {
+    for (let j = 0; j < 12; j++) lavaPools.push({ x: rand(120, WORLD - 120), y: rand(120, WORLD - 120), r: rand(40, 90) });
+  }
   if (st.type === 'wave') {
     for (const [kind, n] of st.spawn) for (let j = 0; j < n; j++) spawnWaveEnemy(kind);
     banner = { text: st.label, sub: 'Зачистите волну', t: 2.6 };
     Music.setBoss(false);
+  } else if (st.type === 'portal') {
+    portal = { x: clamp(player.x, 200, WORLD - 200), y: clamp(player.y - 200, 200, WORLD - 200), t: PORTAL_TIME };
+    banner = { text: 'Огненный портал', sub: 'Шагните внутрь, пока он не закрылся — там ценная добыча', t: 3 };
+    Music.setBoss(false);
   } else {
     spawnBoss(st.boss);
-    banner = { text: boss.name, sub: 'Босс ' + (Math.floor(i / 2) + 1) + ' из 3', t: 2.8 };
+    const bn = STAGES.slice(0, i + 1).filter(s => s.type === 'boss').length;
+    const btotal = STAGES.filter(s => s.type === 'boss').length;
+    banner = { text: boss.name, sub: 'Босс ' + bn + ' из ' + btotal, t: 2.8 };
     Music.setBoss(true);
   }
 }
@@ -337,10 +402,11 @@ function startRun(clsKey) {
     cls, x: WORLD / 2, y: WORLD * 0.78, r: 14,
     hp: cls.hp, maxHp: cls.hp, dmg: cls.dmg, speed: cls.speed,
     level: 1, xp: 0, xpNeed: 25,
-    fireT: 0, abilityT: 0, inv: 0, aimDir: -Math.PI / 2,
+    fireT: 0, abilityT: 0, inv: 0, aimDir: -Math.PI / 2, dexPots: 0,
   };
   bullets = []; ebullets = []; enemies = []; drops = []; particles = [];
   boss = null; nextT = 0; runTime = 0; killCount = 0; shake = 0;
+  portal = null; dungeonReturn = null; lavaPools = [];
   document.getElementById('menu').classList.add('hidden');
   document.getElementById('gameover').classList.add('hidden');
   document.getElementById('victory').classList.add('hidden');
@@ -492,7 +558,8 @@ function update(dt) {
   if (fireAng !== null) {
     player.aimDir = fireAng;
     if (player.fireT <= 0) {
-      player.fireT = 1 / cls.fireRate;
+      // зелья ловкости: +15% скорости атаки за каждое
+      player.fireT = 1 / (cls.fireRate * (1 + 0.15 * player.dexPots));
       for (let i = 0; i < cls.shots; i++) {
         const off = cls.shots === 1 ? 0 : -cls.spread / 2 + (i / (cls.shots - 1)) * cls.spread;
         spawnBullet(fireAng + off, cls.projSpeed, player.dmg, cls.projR, cls.range, cls.pierce);
@@ -513,13 +580,20 @@ function update(dt) {
     const d = Math.sqrt(dist2(e.x, e.y, player.x, player.y));
     let vx = 0, vy = 0;
 
-    if (k.behavior === 'chase') {
+    if (k.behavior === 'chase' || k.behavior === 'ring') {
       vx = Math.cos(a) * k.speed;
       vy = Math.sin(a) * k.speed;
       if (k.wobble) {
         const w = Math.sin(gameTime * 9 + e.seed) * 90;
         vx += Math.cos(a + Math.PI / 2) * w;
         vy += Math.sin(a + Math.PI / 2) * w;
+      }
+      if (k.behavior === 'ring') {
+        e.shootT -= dt;
+        if (e.shootT <= 0 && d < 620) {
+          e.shootT = k.shootCd;
+          ering(e.x, e.y, 8, k.bSpeed, k.bDmg, k.color, rand(0, TAU), 6);
+        }
       }
     } else {
       // стрелки держат дистанцию ~270
@@ -608,7 +682,7 @@ function update(dt) {
       killCount++;
       gainXp(e.k.xp);
       burst(e.x, e.y, 10, e.k.color);
-      if (Math.random() < 0.22) drops.push({ x: e.x, y: e.y });
+      if (Math.random() < 0.22) drops.push({ x: e.x, y: e.y, type: 'hp' });
       enemies.splice(i, 1);
     }
   }
@@ -619,7 +693,10 @@ function update(dt) {
     gainXp(boss.def.xp);
     burst(boss.x, boss.y, 60, boss.color);
     burst(boss.x, boss.y, 40, '#f4d47c');
-    for (let i = 0; i < 3; i++) drops.push({ x: boss.x + rand(-50, 50), y: boss.y + rand(-50, 50) });
+    // с каждого босса — зелье ловкости; с Повелителя Пламени — два (награда за данж)
+    drops.push({ x: boss.x, y: boss.y, type: 'dex' });
+    if (boss.key === 'flameLord') drops.push({ x: boss.x + rand(-45, 45), y: boss.y + rand(-45, 45), type: 'dex' });
+    for (let i = 0; i < 2; i++) drops.push({ x: boss.x + rand(-55, 55), y: boss.y + rand(-55, 55), type: 'hp' });
     shake = Math.max(shake, 14);
     Music.sfx('explode');
     Music.setBoss(false);
@@ -646,9 +723,16 @@ function update(dt) {
   for (let i = drops.length - 1; i >= 0; i--) {
     const d = drops[i];
     if (dist2(d.x, d.y, player.x, player.y) < 26 * 26) {
-      player.hp = Math.min(player.maxHp, player.hp + 30);
-      Music.sfx('pickup');
-      burst(d.x, d.y, 8, '#e86a5e');
+      if (d.type === 'dex') {
+        player.dexPots++;
+        Music.sfx('levelup');
+        banner = { text: 'Скорость атаки +15%!', sub: '', t: 1.5, small: true };
+        burst(d.x, d.y, 12, '#f4d47c');
+      } else {
+        player.hp = Math.min(player.maxHp, player.hp + 30);
+        Music.sfx('pickup');
+        burst(d.x, d.y, 8, '#e86a5e');
+      }
       drops.splice(i, 1);
     }
   }
@@ -664,10 +748,40 @@ function update(dt) {
 
   if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
 
+  // портал в огненный данж
+  if (portal && state === 'play') {
+    portal.t -= dt;
+    if (dist2(player.x, player.y, portal.x, portal.y) < 36 * 36) {
+      dungeonReturn = { x: player.x, y: player.y };
+      portal = null;
+      player.x = WORLD / 2;
+      player.y = WORLD * 0.8;
+      bullets = []; ebullets = [];
+      Music.sfx('teleport');
+      startStage(stageIdx + 1);
+    } else if (portal.t <= 0) {
+      portal = null;
+      banner = { text: 'Портал закрылся…', sub: '', t: 1.8, small: true };
+      startStage(DUNGEON_SKIP_TO);
+    }
+  }
+
+  // тлеющие угольки в огненной теме
+  if (STAGES[stageIdx].fire && Math.random() < dt * 14) {
+    particles.push({
+      x: clamp(cam.x + rand(0, W), 0, WORLD), y: clamp(cam.y + rand(0, H), 0, WORLD),
+      vx: rand(-12, 12), vy: rand(-65, -30),
+      life: rand(0.6, 1.2), maxLife: 1.2,
+      color: Math.random() < 0.5 ? '#ff9838' : '#ffc060', r: rand(1.5, 3),
+    });
+  }
+
   // менеджер этапов
   if (state === 'play') {
     const st = STAGES[stageIdx];
-    const cleared = st.type === 'wave' ? enemies.length === 0 : boss === null;
+    const cleared = st.type === 'wave' ? enemies.length === 0
+      : st.type === 'boss' ? boss === null
+      : false; // портал переключает этапы сам
     if (nextT > 0) {
       nextT -= dt;
       if (nextT <= 0) {
@@ -697,10 +811,11 @@ function draw() {
   ctx.save();
   ctx.translate(-cam.x + sx, -cam.y + sy);
 
-  // пол мира
-  ctx.fillStyle = '#12181f';
+  // пол мира (в данже — огненная тема)
+  const fireTheme = !!(player && STAGES[stageIdx].fire);
+  ctx.fillStyle = fireTheme ? '#1a0d08' : '#12181f';
   ctx.fillRect(0, 0, WORLD, WORLD);
-  ctx.strokeStyle = '#1a232d';
+  ctx.strokeStyle = fireTheme ? '#2e1810' : '#1a232d';
   ctx.lineWidth = 1;
   const gs = 100;
   const x0 = Math.max(0, Math.floor(cam.x / gs) * gs), x1 = Math.min(WORLD, cam.x + W);
@@ -709,21 +824,68 @@ function draw() {
   for (let x = x0; x <= x1; x += gs) { ctx.moveTo(x, Math.max(0, cam.y)); ctx.lineTo(x, y1); }
   for (let y = y0; y <= y1; y += gs) { ctx.moveTo(Math.max(0, cam.x), y); ctx.lineTo(x1, y); }
   ctx.stroke();
+  // лавовые озёра (декор данжа)
+  if (fireTheme) {
+    for (const p of lavaPools) {
+      const lg = ctx.createRadialGradient(p.x, p.y, 2, p.x, p.y, p.r);
+      lg.addColorStop(0, 'rgba(255,140,50,0.55)');
+      lg.addColorStop(0.65, 'rgba(200,60,20,0.3)');
+      lg.addColorStop(1, 'rgba(200,60,20,0)');
+      ctx.fillStyle = lg;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, TAU); ctx.fill();
+    }
+  }
   // стены
-  ctx.strokeStyle = '#33465c';
+  ctx.strokeStyle = fireTheme ? '#8a4224' : '#33465c';
   ctx.lineWidth = 6;
   ctx.strokeRect(3, 3, WORLD - 6, WORLD - 6);
 
   if (player) {
+    // портал в данж
+    if (portal) {
+      const pr = 26 + Math.sin(gameTime * 5) * 3;
+      const pg = ctx.createRadialGradient(portal.x, portal.y, 4, portal.x, portal.y, pr + 16);
+      pg.addColorStop(0, 'rgba(255,190,90,0.95)');
+      pg.addColorStop(0.6, 'rgba(255,106,42,0.55)');
+      pg.addColorStop(1, 'rgba(255,106,42,0)');
+      ctx.fillStyle = pg;
+      ctx.beginPath(); ctx.arc(portal.x, portal.y, pr + 16, 0, TAU); ctx.fill();
+      ctx.strokeStyle = '#ffb066';
+      ctx.lineWidth = 3;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(portal.x, portal.y, pr - i * 6, gameTime * (2 + i), gameTime * (2 + i) + 4.2);
+        ctx.stroke();
+      }
+      // оставшееся время — дуга
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(portal.x, portal.y, pr + 9, -Math.PI / 2, -Math.PI / 2 + TAU * clamp(portal.t / PORTAL_TIME, 0, 1));
+      ctx.stroke();
+    }
+
     // зелья
     for (const d of drops) {
-      ctx.fillStyle = '#c94b41';
-      ctx.beginPath(); ctx.arc(d.x, d.y, 9, 0, TAU); ctx.fill();
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(d.x - 4, d.y); ctx.lineTo(d.x + 4, d.y);
-      ctx.moveTo(d.x, d.y - 4); ctx.lineTo(d.x, d.y + 4);
-      ctx.stroke();
+      if (d.type === 'dex') {
+        ctx.fillStyle = '#e8b23c';
+        ctx.beginPath(); ctx.arc(d.x, d.y, 9, 0, TAU); ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(d.x + 2, d.y - 5);
+        ctx.lineTo(d.x - 2, d.y + 1);
+        ctx.lineTo(d.x + 1, d.y + 1);
+        ctx.lineTo(d.x - 2, d.y + 5);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = '#c94b41';
+        ctx.beginPath(); ctx.arc(d.x, d.y, 9, 0, TAU); ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(d.x - 4, d.y); ctx.lineTo(d.x + 4, d.y);
+        ctx.moveTo(d.x, d.y - 4); ctx.lineTo(d.x, d.y + 4);
+        ctx.stroke();
+      }
     }
 
     // враги
@@ -754,6 +916,18 @@ function draw() {
           ctx.save(); ctx.translate(ox, oy); ctx.rotate(a);
           ctx.strokeRect(-6, -6, 12, 12);
           ctx.restore();
+        }
+      } else if (boss.key === 'flameLord') {
+        ctx.fillStyle = 'rgba(255,176,102,0.8)';
+        for (let i = 0; i < 6; i++) {
+          const a = gameTime * 3 + (i / 6) * TAU;
+          const fx = Math.cos(a) * (boss.r + 10), fy = Math.sin(a) * (boss.r + 10);
+          const fl = 10 + Math.sin(gameTime * 8 + i) * 4;
+          ctx.beginPath();
+          ctx.moveTo(fx + Math.cos(a - 0.35) * 6, fy + Math.sin(a - 0.35) * 6);
+          ctx.lineTo(fx + Math.cos(a) * fl, fy + Math.sin(a) * fl);
+          ctx.lineTo(fx + Math.cos(a + 0.35) * 6, fy + Math.sin(a + 0.35) * 6);
+          ctx.fill();
         }
       } else if (boss.key === 'lich') {
         ctx.strokeStyle = 'rgba(217,168,255,0.5)';
@@ -885,7 +1059,7 @@ function drawUI() {
   ctx.textAlign = 'left';
   ctx.fillStyle = '#cdd8e4';
   ctx.font = '13px system-ui';
-  ctx.fillText(player.cls.name + ' · ур. ' + player.level, 18, 66);
+  ctx.fillText(player.cls.name + ' · ур. ' + player.level + (player.dexPots ? ' · скор. атаки +' + player.dexPots * 15 + '%' : ''), 18, 66);
 
   // умение
   const cd = player.abilityT;
