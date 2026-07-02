@@ -19,11 +19,12 @@ if (window.visualViewport) visualViewport.addEventListener('resize', resize);
 resize();
 
 // ================= мир: кольца от периферии к центру =================
-const WORLD = 4200;
+// масштаб realm'а RotMG: огромная карта, путь от кромки леса до арены — долгий
+const WORLD = 12800;
 const CX = WORLD / 2, CY = WORLD / 2;
-const R_ARENA = 320;   // центральная арена Безумного Бога
-const R_LORDS = 980;   // пояс владык (5 элементальных секторов)
-const R_TITANS = 1560; // земли исполинов; дальше — лес до края карты
+const R_ARENA = 360;    // центральная арена Безумного Бога
+const R_LORDS = 2800;   // пояс владык (5 элементальных секторов)
+const R_TITANS = 4600;  // земли исполинов; дальше — лес до края карты
 
 // сектор 0 центрирован на «юге» (там, где спавнится игрок)
 const SECTORS = [
@@ -484,19 +485,19 @@ function posInRing(rMin, rMax) {
 function genWorld() {
   decor = []; enemies = []; bosses = [];
   // лес: деревья
-  for (let i = 0; i < 180; i++) {
+  for (let i = 0; i < 850; i++) {
     const p = posInRing(R_TITANS + 40, WORLD);
     decor.push({ type: 'tree', x: p.x, y: p.y, s: rand(0.8, 1.6) });
   }
   // земли исполинов: валуны
-  for (let i = 0; i < 55; i++) {
+  for (let i = 0; i < 240; i++) {
     const p = posInRing(R_LORDS + 40, R_TITANS - 40);
     decor.push({ type: 'rock', x: p.x, y: p.y, s: rand(0.7, 1.6) });
   }
   // декор секторов владык
   const secDecor = { nature: 'bush', fire: 'lava', storm: 'spark', moon: 'rune', ocean: 'pool' };
   SECTORS.forEach((s, i) => {
-    for (let j = 0; j < 13; j++) {
+    for (let j = 0; j < 42; j++) {
       const ang = sectorCenterAng(i) + rand(-TAU / 10 * 0.85, TAU / 10 * 0.85);
       const rad = rand(R_ARENA + 70, R_LORDS - 60);
       decor.push({ type: secDecor[s.key], x: CX + Math.cos(ang) * rad, y: CY + Math.sin(ang) * rad, s: rand(0.8, 1.5) });
@@ -505,7 +506,7 @@ function genWorld() {
   // мобы леса (не вплотную к точке спавна игрока)
   const forestKinds = ['wolf', 'mushroom', 'wisp'];
   let placed = 0, guard = 0;
-  while (placed < 30 && guard++ < 600) {
+  while (placed < 170 && guard++ < 3000) {
     const p = posInRing(R_TITANS + 60, WORLD);
     if (dist2(p.x, p.y, player.x, player.y) < 520 * 520) continue;
     spawnEnemy(forestKinds[placed % 3], p.x, p.y);
@@ -513,13 +514,13 @@ function genWorld() {
   }
   // исполины (не вплотную к лесу, чтобы не аггрились на свежий спавн)
   const titanKinds = ['cyclops', 'hydra', 'phoenix'];
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < 60; i++) {
     const p = posInRing(R_LORDS + 80, R_TITANS - 170);
     spawnEnemy(titanKinds[i % 3], p.x, p.y);
   }
   // миньоны секторов + владыки
   SECTORS.forEach((s, i) => {
-    for (let j = 0; j < 6; j++) {
+    for (let j = 0; j < 18; j++) {
       const ang = sectorCenterAng(i) + rand(-TAU / 10 * 0.8, TAU / 10 * 0.8);
       const rad = rand(R_ARENA + 100, R_LORDS - 90);
       spawnEnemy(s.minions[j % s.minions.length], CX + Math.cos(ang) * rad, CY + Math.sin(ang) * rad);
@@ -826,10 +827,15 @@ function update(dt) {
     }
   }
 
-  // расталкивание врагов
-  for (let i = 0; i < enemies.length; i++) {
-    for (let j = i + 1; j < enemies.length; j++) {
-      const a = enemies[i], b = enemies[j];
+  // расталкивание врагов — только рядом с игроком (вдали наложение незаметно,
+  // а на большой карте пар слишком много для полного перебора)
+  const sep = [];
+  for (const e of enemies) {
+    if (dist2(e.x, e.y, player.x, player.y) < 1400 * 1400) sep.push(e);
+  }
+  for (let i = 0; i < sep.length; i++) {
+    for (let j = i + 1; j < sep.length; j++) {
+      const a = sep[i], b = sep[j];
       const dd = dist2(a.x, a.y, b.x, b.y), min = a.r + b.r;
       if (dd > 0 && dd < min * min) {
         const d = Math.sqrt(dd), push = (min - d) / 2;
