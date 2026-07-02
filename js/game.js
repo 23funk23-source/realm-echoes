@@ -10,8 +10,12 @@ const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 let W = 0, H = 0;
-function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; }
+function resize() {
+  W = canvas.width = canvas.clientWidth || innerWidth;
+  H = canvas.height = canvas.clientHeight || innerHeight;
+}
 addEventListener('resize', resize);
+if (window.visualViewport) visualViewport.addEventListener('resize', resize);
 resize();
 
 const WORLD = 1800;
@@ -46,7 +50,93 @@ canvas.addEventListener('mousedown', e => {
 });
 addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
-addEventListener('blur', () => { mouse.down = false; });
+addEventListener('blur', () => {
+  mouse.down = false;
+  for (const k in keys) keys[k] = false; // иначе клавиши «залипают» при Alt-Tab
+});
+
+// пауза при сворачивании вкладки; при возврате — реанимация аудио (iOS 'interrupted')
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (state === 'play') state = 'pause';
+  } else if (state !== 'menu') {
+    Music.ensure();
+  }
+});
+
+// ================= сенсорное управление =================
+// левая половина — виртуальный джойстик, правый нижний угол — кнопка умения,
+// касание в остальной правой части — ручной прицел (как зажатая ЛКМ)
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+const touchCtl = { moveId: null, aimId: null, stick: null };
+const abilityBtn = () => ({ x: W - 74, y: H - 84, r: 46 });
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  Music.ensure();
+  if (state === 'pause') { state = 'play'; return; }
+  if (state !== 'play') return;
+  for (const t of e.changedTouches) {
+    const x = t.clientX, y = t.clientY;
+    const ab = abilityBtn();
+    if (dist2(x, y, ab.x, ab.y) < (ab.r + 12) ** 2) { useAbility(); continue; }
+    if (x < W * 0.45 && touchCtl.moveId === null) {
+      touchCtl.moveId = t.identifier;
+      touchCtl.stick = { x, y, dx: 0, dy: 0 };
+    } else if (touchCtl.aimId === null) {
+      touchCtl.aimId = t.identifier;
+      mouse.x = x; mouse.y = y; mouse.down = true;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === touchCtl.moveId && touchCtl.stick) {
+      const s = touchCtl.stick;
+      s.dx = clamp(t.clientX - s.x, -60, 60);
+      s.dy = clamp(t.clientY - s.y, -60, 60);
+    } else if (t.identifier === touchCtl.aimId) {
+      mouse.x = t.clientX; mouse.y = t.clientY;
+    }
+  }
+}, { passive: false });
+
+function touchEnd(e) {
+  for (const t of e.changedTouches) {
+    if (t.identifier === touchCtl.moveId) { touchCtl.moveId = null; touchCtl.stick = null; }
+    if (t.identifier === touchCtl.aimId) { touchCtl.aimId = null; mouse.down = false; }
+  }
+}
+canvas.addEventListener('touchend', touchEnd);
+canvas.addEventListener('touchcancel', touchEnd);
+
+// ================= рекорды (localStorage) =================
+function loadRecords() {
+  // localStorage общий для всего *.github.io-домена — значение может быть чем угодно
+  try {
+    const v = JSON.parse(localStorage.getItem('re-records') || '[]');
+    return Array.isArray(v) ? v.filter(r => r && typeof r === 'object') : [];
+  } catch { return []; }
+}
+function saveRun(win) {
+  const all = loadRecords();
+  all.push({ cls: player.cls.name, level: player.level, kills: killCount, time: Math.round(runTime), win });
+  // победы выше поражений; победы — по времени, поражения — по уровню
+  all.sort((a, b) => (b.win - a.win) || (a.win && b.win ? a.time - b.time : b.level - a.level));
+  try { localStorage.setItem('re-records', JSON.stringify(all.slice(0, 5))); } catch { /* приватный режим */ }
+  renderRecords();
+}
+function renderRecords() {
+  const el = document.getElementById('records');
+  const all = loadRecords();
+  el.innerHTML = all.length
+    ? '<h2>Лучшие забеги</h2>' + all.map(r =>
+        `<div class="rec${r.win ? ' win' : ''}">${r.win ? '&#127942;' : '&#128128;'} ${r.cls} · ур. ${r.level} · убийств: ${r.kills} · ${fmtTime(r.time)}</div>`).join('')
+    : '';
+}
+try { renderRecords(); } catch { /* рекорды не должны блокировать запуск игры */ }
 
 // ================= классы =================
 const CLASSES = {
@@ -367,6 +457,11 @@ function startStage(i) {
   const st = STAGES[i];
   // возвращение из данжа на место входа
   if (dungeonReturn && !st.fire) {
+    // несобранная добыча данжа переезжает вместе с игроком
+    for (const d of drops) {
+      d.x = clamp(dungeonReturn.x + rand(-70, 70), 20, WORLD - 20);
+      d.y = clamp(dungeonReturn.y + rand(-70, 70), 20, WORLD - 20);
+    }
     player.x = dungeonReturn.x;
     player.y = dungeonReturn.y;
     dungeonReturn = null;
@@ -382,7 +477,14 @@ function startStage(i) {
     banner = { text: st.label, sub: 'Зачистите волну', t: 2.6 };
     Music.setBoss(false);
   } else if (st.type === 'portal') {
-    portal = { x: clamp(player.x, 200, WORLD - 200), y: clamp(player.y - 200, 200, WORLD - 200), t: PORTAL_TIME };
+    let px = clamp(player.x, 200, WORLD - 200), py = clamp(player.y - 200, 200, WORLD - 200);
+    if (dist2(px, py, player.x, player.y) < 150 * 150) {
+      // не спавнить портал вплотную к игроку — иначе мгновенный незапрошенный телепорт
+      const aC = Math.atan2(WORLD / 2 - player.y, WORLD / 2 - player.x);
+      px = clamp(player.x + Math.cos(aC) * 220, 200, WORLD - 200);
+      py = clamp(player.y + Math.sin(aC) * 220, 200, WORLD - 200);
+    }
+    portal = { x: px, y: py, t: PORTAL_TIME };
     banner = { text: 'Огненный портал', sub: 'Шагните внутрь, пока он не закрылся — там ценная добыча', t: 3 };
     Music.setBoss(false);
   } else {
@@ -455,6 +557,7 @@ function hurtPlayer(dmg) {
     document.getElementById('deathStats').textContent =
       `${player.cls.name} пал ${where}\nУровень: ${player.level} · Убийств: ${killCount} · Время: ${fmtTime(runTime)}`;
     document.getElementById('gameover').classList.remove('hidden');
+    saveRun(false);
   }
 }
 
@@ -468,7 +571,8 @@ function useAbility() {
   if (state !== 'play' || !player || player.abilityT > 0) return;
   const cls = player.cls;
   player.abilityT = cls.abilityCd;
-  const aim = aimAngle();
+  // при ручном прицеле — по курсору/пальцу, иначе — по направлению автоатаки
+  const aim = mouse.down ? aimAngle() : player.aimDir;
   Music.sfx('ability');
 
   if (cls.key === 'warrior') {
@@ -508,6 +612,7 @@ function spawnBullet(ang, speed, dmg, r, range, pierce) {
     x: player.x, y: player.y,
     vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
     r, dmg, pierce, life: range / speed, color: player.cls.color,
+    hit: new Set(), // пробивающая пуля не должна бить одну цель дважды
   });
 }
 
@@ -525,13 +630,18 @@ function update(dt) {
   gameTime += dt;
   const cls = player.cls;
 
-  // движение игрока
+  // движение игрока: клавиатура или виртуальный джойстик
   let mx = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
   let my = (keys.KeyS || keys.ArrowDown ? 1 : 0) - (keys.KeyW || keys.ArrowUp ? 1 : 0);
-  if (mx || my) {
+  let mag = mx || my ? 1 : 0;
+  if (touchCtl.stick) {
+    const s = touchCtl.stick, l = Math.hypot(s.dx, s.dy);
+    if (l > 8) { mx = s.dx / l; my = s.dy / l; mag = Math.min(1, l / 50); }
+  }
+  if (mag > 0 && (mx || my)) {
     const l = Math.hypot(mx, my);
-    player.x = clamp(player.x + (mx / l) * player.speed * dt, player.r, WORLD - player.r);
-    player.y = clamp(player.y + (my / l) * player.speed * dt, player.r, WORLD - player.r);
+    player.x = clamp(player.x + (mx / l) * mag * player.speed * dt, player.r, WORLD - player.r);
+    player.y = clamp(player.y + (my / l) * mag * player.speed * dt, player.r, WORLD - player.r);
   }
   player.inv = Math.max(0, player.inv - dt);
   player.abilityT = Math.max(0, player.abilityT - dt);
@@ -543,7 +653,8 @@ function update(dt) {
   if (mouse.down) {
     fireAng = aimAngle();
   } else {
-    const R = cls.range + 80;
+    // захват цели не дальше, чем реально долетает пуля (range + радиус пули)
+    const R = cls.range + cls.projR;
     let best = Infinity, tx = 0, ty = 0, found = false;
     for (const e of enemies) {
       const d = dist2(e.x, e.y, player.x, player.y);
@@ -657,7 +768,9 @@ function update(dt) {
     if (!dead) {
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
+        if (b.hit.has(e)) continue;
         if (dist2(b.x, b.y, e.x, e.y) < (b.r + e.r) ** 2) {
+          b.hit.add(e);
           e.hp -= b.dmg;
           burst(b.x, b.y, 3, e.k.color);
           Music.sfx('hit');
@@ -761,8 +874,9 @@ function update(dt) {
       startStage(stageIdx + 1);
     } else if (portal.t <= 0) {
       portal = null;
-      banner = { text: 'Портал закрылся…', sub: '', t: 1.8, small: true };
       startStage(DUNGEON_SKIP_TO);
+      // после startStage, иначе баннер этапа его перезапишет
+      banner = { text: 'Портал закрылся…', sub: STAGES[DUNGEON_SKIP_TO].label, t: 2.2 };
     }
   }
 
@@ -790,6 +904,7 @@ function update(dt) {
           document.getElementById('winStats').textContent =
             `${player.cls.name} · Уровень ${player.level} · Убийств: ${killCount} · Время: ${fmtTime(runTime)}`;
           document.getElementById('victory').classList.remove('hidden');
+          saveRun(true);
         } else {
           startStage(stageIdx + 1);
         }
@@ -1104,6 +1219,39 @@ function drawUI() {
     ctx.globalAlpha = 1;
   }
 
+  // сенсорный интерфейс
+  if (IS_TOUCH && state === 'play') {
+    // кнопка умения
+    const ab = abilityBtn();
+    const ready = player.abilityT <= 0;
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = ready ? 'rgba(122,199,79,0.35)' : 'rgba(30,40,52,0.6)';
+    ctx.beginPath(); ctx.arc(ab.x, ab.y, ab.r, 0, TAU); ctx.fill();
+    ctx.strokeStyle = ready ? '#7ac74f' : '#5a6a7e';
+    ctx.lineWidth = 3;
+    if (!ready) {
+      ctx.beginPath();
+      ctx.arc(ab.x, ab.y, ab.r, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - player.abilityT / player.cls.abilityCd));
+      ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.arc(ab.x, ab.y, ab.r, 0, TAU); ctx.stroke();
+    }
+    ctx.fillStyle = '#dfe6ee';
+    ctx.font = 'bold 13px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText(ready ? 'УМЕНИЕ' : player.abilityT.toFixed(1), ab.x, ab.y);
+    // джойстик
+    if (touchCtl.stick) {
+      const s = touchCtl.stick;
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 52, 0, TAU); ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.beginPath(); ctx.arc(s.x + s.dx, s.y + s.dy, 22, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
   if (state === 'pause') {
     ctx.fillStyle = 'rgba(8,11,15,0.6)';
     ctx.fillRect(0, 0, W, H);
@@ -1113,7 +1261,7 @@ function drawUI() {
     ctx.fillText('Пауза', W / 2, H / 2 - 10);
     ctx.font = '15px system-ui';
     ctx.fillStyle = '#9fb0c3';
-    ctx.fillText('P — продолжить', W / 2, H / 2 + 26);
+    ctx.fillText(IS_TOUCH ? 'Коснитесь экрана, чтобы продолжить' : 'P — продолжить', W / 2, H / 2 + 26);
   }
 
   ctx.textAlign = 'left';
@@ -1122,6 +1270,7 @@ function drawUI() {
 // ================= цикл =================
 let last = performance.now();
 function frame(t) {
+  if (W === 0 || H === 0) resize(); // если первый layout пришёл позже загрузки скрипта
   const dt = Math.min(0.033, (t - last) / 1000);
   last = t;
   if (state === 'play') update(dt);

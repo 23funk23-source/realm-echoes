@@ -3,24 +3,37 @@
 html, body {
   width: 100%; height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   background: #0c1014;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   color: #dfe6ee;
 }
 
-#game { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+/* 100% (layout viewport), не 100vh: на мобильных 100vh — «большой» вьюпорт,
+   и буфер канваса рассинхронизируется с CSS-размером (тач-координаты съезжают) */
+#game { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+
+.touch-hint { display: none; }
+@media (pointer: coarse) {
+  .touch-hint { display: block; }
+}
 
 .overlay {
   position: fixed; inset: 0;
   display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
+  align-items: center; justify-content: flex-start;
   gap: 22px;
   background: rgba(8, 11, 15, 0.86);
   backdrop-filter: blur(4px);
   text-align: center;
   padding: 24px;
   z-index: 10;
+  overflow-y: auto;
 }
+/* центрирование через auto-margins: контент по центру, пока влезает,
+   и честный скролл без обрезки верха, когда не влезает */
+.overlay > :first-child { margin-top: auto; }
+.overlay > :last-child { margin-bottom: auto; }
 .overlay.hidden { display: none; }
 
 h1 {
@@ -78,3 +91,31 @@ h1.gold { color: #ffd85e; text-shadow: 0 0 28px rgba(255, 216, 94, 0.5); }
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
 .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 22px rgba(244, 212, 124, 0.35); }
+
+#records { min-height: 0; }
+#records h2 {
+  font-size: 14px;
+  color: #7c8ea3;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 8px;
+}
+#records .rec {
+  font-size: 14px;
+  color: #9fb0c3;
+  line-height: 1.7;
+}
+#records .rec.win { color: #f4d47c; }
+
+@media (max-width: 720px), (max-height: 640px) {
+  .overlay { gap: 12px; padding: 16px; }
+  h1 { font-size: 32px; }
+  .tagline { font-size: 14px; }
+  .cards { gap: 10px; }
+  .card { width: min(218px, 92vw); padding: 12px; }
+  .card-sprite { width: 56px; height: 56px; margin-bottom: 4px; }
+  .card-name { font-size: 17px; margin-bottom: 6px; }
+  .card li { font-size: 12px; }
+  .hint { font-size: 12px; }
+  #records .rec { font-size: 12px; }
+}

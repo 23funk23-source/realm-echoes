@@ -2,8 +2,16 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Realm of Echoes</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Realm of Echoes — браузерный рогалик</title>
+<meta name="description" content="Realm of Echoes — браузерный мини-рогалик в духе Realm of the Mad God: три класса, четыре босса, огненный данж, перманентная смерть. Играется на компьютере и телефоне.">
+<meta property="og:title" content="Realm of Echoes">
+<meta property="og:description" content="Браузерный буллет-хелл рогалик: один забег, четыре босса, огненный данж. Бесплатно, без установки.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#0c1014">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -11,7 +19,7 @@
 
 <div id="menu" class="overlay">
   <h1>Realm of Echoes</h1>
-  <p class="tagline">Мини-рогалик в духе Realm of the Mad God: один забег, три босса, перманентная смерть.</p>
+  <p class="tagline">Мини-рогалик в духе Realm of the Mad God: один забег, четыре босса, огненный данж, перманентная смерть.</p>
   <div class="cards">
     <button class="card warrior" onclick="startRun('warrior')">
       <canvas class="card-sprite" data-cls="warrior" width="80" height="80"></canvas>
@@ -42,7 +50,9 @@
     </button>
   </div>
   <p class="hint">WASD — движение &middot; атака — автоматически по ближайшему врагу &middot; зажать ЛКМ — ручной прицел &middot; Space/ПКМ — умение &middot; M — музыка &middot; P — пауза</p>
-  <p class="hint dim">Звук включится после выбора класса</p>
+  <p class="hint touch-hint">На телефоне: левая половина экрана — джойстик, кнопка справа внизу — умение</p>
+  <div id="records"></div>
+  <p class="hint dim">Звук включится после выбора класса &middot; v1.0.0</p>
 </div>
 
 <div id="gameover" class="overlay hidden">

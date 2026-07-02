@@ -69,6 +69,9 @@ const Music = (() => {
   }
 
   function scheduleStep() {
+    // при suspended/interrupted currentTime заморожен: ноты копились бы
+    // в одной точке и дали бы залп при возобновлении
+    if (muted || ac.state !== 'running') return;
     const t = ac.currentTime + 0.06;
     const chord = CHORDS[Math.floor(step / 16) % CHORDS.length];
 
@@ -104,7 +107,8 @@ const Music = (() => {
       started = true;
       startLoop();
     }
-    if (ac.state === 'suspended') ac.resume();
+    // не только 'suspended': iOS Safari после блокировки/звонка даёт 'interrupted'
+    if (ac.state !== 'running') ac.resume().catch(() => {});
   }
 
   function setBoss(b) {
