@@ -234,6 +234,17 @@ function efan(x, y, n, spread, speed, dmg, color, br = 7) {
 }
 
 // ================= владыки (мини-боссы) и Безумный Бог =================
+// точка назначения телепорта владыки не должна выходить за поводок —
+// иначе вспышка/кольцо пуль появятся там, куда босс не материализуется
+function leashClamp(b) {
+  const dx = b.x - b.home.x, dy = b.y - b.home.y;
+  const d = Math.hypot(dx, dy);
+  if (d > 460) {
+    b.x = b.home.x + dx / d * 460;
+    b.y = b.home.y + dy / d * 460;
+  }
+}
+
 const BOSSDEFS = {
   stormLord: {
     name: 'Громовой Владыка', sprite: 'lordStorm', hp: 1250, r: 44, color: '#7ab8f0', contact: 15, xp: 240,
@@ -247,6 +258,7 @@ const BOSSDEFS = {
         const a = rand(0, TAU), d = rand(140, 240);
         b.x = clamp(b.x + Math.cos(a) * d, 90, WORLD - 90);
         b.y = clamp(b.y + Math.sin(a) * d, 90, WORLD - 90);
+        leashClamp(b);
         burst(b.x, b.y, 14, b.color);
         Music.sfx('teleport');
       }
@@ -322,6 +334,7 @@ const BOSSDEFS = {
         const a = rand(0, TAU), d = rand(260, 380);
         b.x = clamp(player.x + Math.cos(a) * d, 90, WORLD - 90);
         b.y = clamp(player.y + Math.sin(a) * d, 90, WORLD - 90);
+        leashClamp(b);
         burst(b.x, b.y, 18, b.color);
         Music.sfx('teleport');
         if (rage) ering(b.x, b.y, 14, 190, 14, '#d9a8ff');
@@ -583,6 +596,7 @@ function hurtPlayer(dmg) {
 }
 
 function win() {
+  if (state !== 'play') return; // размен с боссом: смерть игрока в тот же кадр — победа не засчитывается
   state = 'win';
   Music.setBoss(false);
   document.getElementById('winStats').textContent =
@@ -1312,7 +1326,7 @@ function bar(x, y, w, h, frac, fg, bg) {
 }
 
 function drawMinimap() {
-  const S = 128, mx = W - 18 - S, my = 92;
+  const S = Math.min(128, Math.round(W * 0.3)), mx = W - 18 - S, my = 92;
   const sc = S / WORLD;
   ctx.globalAlpha = 0.88;
   ctx.fillStyle = '#0a0f0a';
@@ -1354,14 +1368,15 @@ function drawMinimap() {
 
 function drawUI() {
   ctx.textBaseline = 'middle';
+  const bw = Math.min(230, W * 0.42); // на узких экранах бары короче, чтобы не наезжать на правый блок
 
   // HP / XP
-  bar(18, 18, 230, 20, player.hp / player.maxHp, '#c94b41', 'rgba(0,0,0,0.55)');
+  bar(18, 18, bw, 20, player.hp / player.maxHp, '#c94b41', 'rgba(0,0,0,0.55)');
   ctx.fillStyle = '#fff';
   ctx.font = '12px system-ui';
   ctx.textAlign = 'center';
-  ctx.fillText(Math.ceil(player.hp) + ' / ' + Math.ceil(player.maxHp), 18 + 115, 28);
-  bar(18, 42, 230, 10, player.xp / player.xpNeed, '#f4d47c', 'rgba(0,0,0,0.55)');
+  ctx.fillText(Math.ceil(player.hp) + ' / ' + Math.ceil(player.maxHp), 18 + bw / 2, 28);
+  bar(18, 42, bw, 10, player.xp / player.xpNeed, '#f4d47c', 'rgba(0,0,0,0.55)');
   ctx.textAlign = 'left';
   ctx.fillStyle = '#cdd8e4';
   ctx.font = '13px system-ui';
@@ -1369,7 +1384,7 @@ function drawUI() {
 
   // умение
   const cd = player.abilityT;
-  bar(18, 80, 230, 12, 1 - cd / player.cls.abilityCd, cd > 0 ? '#5a8fd8' : '#7ac74f', 'rgba(0,0,0,0.55)');
+  bar(18, 80, bw, 12, 1 - cd / player.cls.abilityCd, cd > 0 ? '#5a8fd8' : '#7ac74f', 'rgba(0,0,0,0.55)');
   ctx.fillStyle = '#9fb0c3';
   ctx.font = '11px system-ui';
   ctx.fillText(player.cls.abilityName + (cd > 0 ? ' · ' + cd.toFixed(1) + 'с' : ' — готово [Space]'), 18, 102);
@@ -1397,18 +1412,19 @@ function drawUI() {
     bar(W / 2 - bw / 2, 38, bw, 14, engagedBoss.hp / engagedBoss.maxHp, engagedBoss.color, 'rgba(0,0,0,0.6)');
   }
 
-  // баннер
+  // баннер (размер шрифта подстраивается под узкие экраны)
   if (banner) {
     const a = clamp(banner.t / 0.5, 0, 1);
     ctx.globalAlpha = a;
     ctx.textAlign = 'center';
     ctx.fillStyle = '#f4d47c';
-    ctx.font = 'bold ' + (banner.small ? 26 : 40) + 'px system-ui';
+    const bigFs = Math.min(banner.small ? 26 : 40, W / 11);
+    ctx.font = 'bold ' + bigFs + 'px system-ui';
     ctx.fillText(banner.text, W / 2, H * 0.32);
     if (banner.sub) {
       ctx.fillStyle = '#9fb0c3';
-      ctx.font = '16px system-ui';
-      ctx.fillText(banner.sub, W / 2, H * 0.32 + 36);
+      ctx.font = Math.min(16, W / 26) + 'px system-ui';
+      ctx.fillText(banner.sub, W / 2, H * 0.32 + bigFs * 0.9);
     }
     ctx.globalAlpha = 1;
   }
