@@ -992,7 +992,8 @@ function update(dt) {
       if (d.type === 'dex') {
         player.dexPots++;
         Music.sfx('levelup');
-        banner = { text: 'Скорость атаки +15%!', sub: '', t: 1.5, small: true };
+        // не затирать сюжетный баннер («Все владыки пали!» и т.п.)
+        if (!banner || banner.small) banner = { text: 'Скорость атаки +15%!', sub: '', t: 1.5, small: true };
         burst(d.x, d.y, 12, '#f4d47c');
       } else {
         player.hp = Math.min(player.maxHp, player.hp + 30);
@@ -1402,14 +1403,18 @@ function drawUI() {
   ctx.fillText('M · звук: ' + (Music.isMuted() ? 'выкл' : 'вкл') + ' · ' + fmtTime(runTime), W - 18, 64);
   drawMinimap();
 
-  // HP ближайшего босса
+  // HP ближайшего босса (на узких экранах — ниже минимапы, чтобы не наезжать на бары)
   if (engagedBoss) {
-    const bw = Math.min(430, W * 0.5);
+    const bw2 = Math.min(430, W * 0.5);
+    const narrow = W < 560;
+    const mmS = Math.min(128, Math.round(W * 0.3));
+    const nameY = narrow ? 92 + mmS + 26 : 26;
+    const barY = narrow ? nameY + 14 : 38;
     ctx.textAlign = 'center';
     ctx.fillStyle = '#f0d9ff';
-    ctx.font = 'bold 15px system-ui';
-    ctx.fillText(engagedBoss.name, W / 2, 26);
-    bar(W / 2 - bw / 2, 38, bw, 14, engagedBoss.hp / engagedBoss.maxHp, engagedBoss.color, 'rgba(0,0,0,0.6)');
+    ctx.font = (narrow ? 'bold 13px' : 'bold 15px') + ' system-ui';
+    ctx.fillText(engagedBoss.name, W / 2, nameY);
+    bar(W / 2 - bw2 / 2, barY, bw2, 14, engagedBoss.hp / engagedBoss.maxHp, engagedBoss.color, 'rgba(0,0,0,0.6)');
   }
 
   // баннер (размер шрифта подстраивается под узкие экраны)
