@@ -22,7 +22,8 @@ resize();
 // масштаб realm'а RotMG: огромная карта, путь от кромки леса до арены — долгий
 const WORLD = 12800;
 const CX = WORLD / 2, CY = WORLD / 2;
-const R_ARENA = 360;    // центральная арена Безумного Бога
+const R_ARENA = 360;    // запечатанный центр карты (вход в цитадель)
+const R_CITADEL = 560;  // отдельная локация финального боя — Цитадель Безумного Бога
 const R_LORDS = 2800;   // пояс владык (5 элементальных секторов)
 const R_TITANS = 4600;  // земли исполинов; дальше — лес до края карты
 
@@ -43,7 +44,8 @@ const sectorCenterAng = i => Math.PI / 2 + i * TAU / 5;
 
 function zoneAt(x, y) {
   const d = Math.hypot(x - CX, y - CY);
-  if (d < R_ARENA) return { key: 'arena', name: 'Арена Безумного Бога' };
+  if (finalActive && d < R_CITADEL + 60) return { key: 'citadel', name: 'Цитадель Безумного Бога' };
+  if (d < R_ARENA) return { key: 'arena', name: 'Запечатанный центр' };
   if (d < R_LORDS) { const s = SECTORS[sectorIdxAt(x, y)]; return { key: s.key, name: s.name, sector: s }; }
   if (d < R_TITANS) return { key: 'titans', name: 'Земли Исполинов' };
   return { key: 'forest', name: 'Лес Эха' };
@@ -55,6 +57,12 @@ let player = null;
 let bullets = [], ebullets = [], enemies = [], drops = [], particles = [], decor = [];
 let bosses = [], engagedBoss = null;
 let lordsLeft = 5, finalT = 0, finalActive = false;
+let worldNum = 1, nextPortal = null;
+
+// следующий мир — та же карта, но твари сильнее (компаунд, чтобы поспевать за игроком)
+const worldHpMul = () => Math.pow(1.45, worldNum - 1);
+const worldDmgMul = () => Math.pow(1.25, worldNum - 1);
+const worldXpMul = () => 1 + (worldNum - 1) * 0.35;
 let cam = { x: 0, y: 0 };
 let banner = null, shake = 0, lastZone = '';
 let runTime = 0, killCount = 0, gameTime = 0;
@@ -74,7 +82,10 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => keys[e.code] = false);
 addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
 canvas.addEventListener('mousedown', e => {
-  if (e.button === 0) mouse.down = true;
+  if (e.button === 0) {
+    if (uiClick(e.clientX, e.clientY)) return; // клик по слотам — не прицеливание
+    mouse.down = true;
+  }
   if (e.button === 2) useAbility();
 });
 addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
@@ -97,8 +108,9 @@ document.addEventListener('visibilitychange', () => {
 // левая половина — виртуальный джойстик, правый нижний угол — кнопка умения,
 // касание в остальной правой части — ручной прицел (как зажатая ЛКМ)
 const IS_TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-const touchCtl = { moveId: null, aimId: null, stick: null };
-const abilityBtn = () => ({ x: W - 74, y: H - 84, r: 46 });
+const touchCtl = { moveId: null, aimId: null, stick: null, tap: null };
+// на узких экранах кнопка поднята, чтобы не перекрывать слоты экипировки
+const abilityBtn = () => ({ x: W - 74, y: H - 84 - (W < 440 ? 56 : 0), r: 46 });
 
 canvas.addEventListener('touchstart', e => {
   e.preventDefault();
@@ -107,8 +119,14 @@ canvas.addEventListener('touchstart', e => {
   if (state !== 'play') return;
   for (const t of e.changedTouches) {
     const x = t.clientX, y = t.clientY;
+    // кнопка умения рисуется поверх слотов — и проверяется первой
     const ab = abilityBtn();
     if (dist2(x, y, ab.x, ab.y) < (ab.r + 12) ** 2) { useAbility(); continue; }
+    // слот экипировки: кандидат тапа, сработает на touchend, если палец не сдвинулся
+    // (не блокируем джойстик — палец, поставленный сюда для движения, ведёт себя как обычно)
+    if (slotRects().some(r => x >= r.x && x <= r.x + r.size && y >= r.y && y <= r.y + r.size)) {
+      touchCtl.tap = { id: t.identifier, x, y };
+    }
     if (x < W * 0.45 && touchCtl.moveId === null) {
       touchCtl.moveId = t.identifier;
       touchCtl.stick = { x, y, dx: 0, dy: 0 };
@@ -122,6 +140,11 @@ canvas.addEventListener('touchstart', e => {
 canvas.addEventListener('touchmove', e => {
   e.preventDefault();
   for (const t of e.changedTouches) {
+    // сдвиг пальца отменяет тап по слоту — это было движение, а не клик
+    if (touchCtl.tap && t.identifier === touchCtl.tap.id
+        && dist2(t.clientX, t.clientY, touchCtl.tap.x, touchCtl.tap.y) > 144) {
+      touchCtl.tap = null;
+    }
     if (t.identifier === touchCtl.moveId && touchCtl.stick) {
       const s = touchCtl.stick;
       s.dx = clamp(t.clientX - s.x, -60, 60);
@@ -134,6 +157,11 @@ canvas.addEventListener('touchmove', e => {
 
 function touchEnd(e) {
   for (const t of e.changedTouches) {
+    // осознанный тап по слоту: палец отпущен там же, где поставлен
+    if (touchCtl.tap && t.identifier === touchCtl.tap.id) {
+      uiClick(touchCtl.tap.x, touchCtl.tap.y);
+      touchCtl.tap = null;
+    }
     if (t.identifier === touchCtl.moveId) { touchCtl.moveId = null; touchCtl.stick = null; }
     if (t.identifier === touchCtl.aimId) { touchCtl.aimId = null; mouse.down = false; }
   }
@@ -146,14 +174,17 @@ function loadRecords() {
   // localStorage общий для всего *.github.io-домена — значение может быть чем угодно
   try {
     const v = JSON.parse(localStorage.getItem('re-records') || '[]');
-    return Array.isArray(v) ? v.filter(r => r && typeof r === 'object') : [];
+    if (!Array.isArray(v)) return [];
+    return v.filter(r => r && typeof r === 'object')
+      // миграция v1.1: победа (убит Бог) эквивалентна «дошёл до мира 2»
+      .map(r => (r.win && !r.world ? { ...r, world: 2 } : r));
   } catch { return []; }
 }
-function saveRun(win) {
+function saveRun() {
   const all = loadRecords();
-  all.push({ cls: player.cls.name, level: player.level, kills: killCount, time: Math.round(runTime), win });
-  // победы выше поражений; победы — по времени, поражения — по уровню
-  all.sort((a, b) => (b.win - a.win) || (a.win && b.win ? a.time - b.time : b.level - a.level));
+  all.push({ cls: player.cls.name, world: worldNum, level: player.level, kills: killCount, time: Math.round(runTime) });
+  // выше тот, кто дошёл до более дальнего мира; при равенстве — уровень
+  all.sort((a, b) => ((b.world || 1) - (a.world || 1)) || (b.level - a.level));
   try { localStorage.setItem('re-records', JSON.stringify(all.slice(0, 5))); } catch { /* приватный режим */ }
   renderRecords();
 }
@@ -161,8 +192,10 @@ function renderRecords() {
   const el = document.getElementById('records');
   const all = loadRecords();
   el.innerHTML = all.length
-    ? '<h2>Лучшие забеги</h2>' + all.map(r =>
-        `<div class="rec${r.win ? ' win' : ''}">${r.win ? '&#127942;' : '&#128128;'} ${r.cls} · ур. ${r.level} · убийств: ${r.kills} · ${fmtTime(r.time)}</div>`).join('')
+    ? '<h2>Лучшие забеги</h2>' + all.map(r => {
+        const w = r.world || 1;
+        return `<div class="rec${w > 1 ? ' win' : ''}">${w > 1 ? '&#127942;' : '&#128128;'} ${r.cls} · мир ${w} · ур. ${r.level} · убийств: ${r.kills} · ${fmtTime(r.time)}</div>`;
+      }).join('')
     : '';
 }
 try { renderRecords(); } catch { /* рекорды не должны блокировать запуск игры */ }
@@ -189,6 +222,79 @@ const CLASSES = {
   },
 };
 
+// ================= предметы и характеристики =================
+// Слоты экипировки: оружие (урон), панцирь (броня), амулет (HP/скорость/скор. атаки).
+// Предметы можно надевать и снимать кликом по слотам внизу слева.
+const SLOTS = ['weapon', 'armor', 'ring'];
+const SLOT_NAMES = { weapon: 'Клинок', armor: 'Панцирь', ring: 'Амулет' };
+const SLOT_COLORS = { weapon: '#e86a5e', armor: '#6aa8e8', ring: '#f4d47c' };
+const SLOT_GLYPHS = { weapon: 'О', armor: 'П', ring: 'А' };
+const LORD_GENITIVE = {
+  stormLord: 'Грозы', oceanKing: 'Прилива', natureWarden: 'Рощи',
+  moonArchon: 'Луны', flameLord: 'Пламени', madGod: 'Безумного Бога',
+};
+
+function makeItem(slot, tier, owner) {
+  const it = { slot, tier, name: SLOT_NAMES[slot] + (owner ? ' ' + owner : '') + ' T' + tier };
+  if (slot === 'weapon') it.dmg = 0.08 + 0.06 * tier;
+  else if (slot === 'armor') it.armor = 2 + 2 * tier;
+  else {
+    const roll = Math.floor(rand(0, 3));
+    if (roll === 0) it.hp = 15 + 15 * tier;
+    else if (roll === 1) it.speed = 8 + 6 * tier;
+    else it.atkSpd = 0.05 + 0.05 * tier;
+  }
+  return it;
+}
+
+function fmtItem(it) {
+  const b = [];
+  if (it.dmg) b.push('+' + Math.round(it.dmg * 100) + '% урона');
+  if (it.armor) b.push('+' + it.armor + ' брони');
+  if (it.hp) b.push('+' + it.hp + ' HP');
+  if (it.speed) b.push('+' + it.speed + ' к скорости');
+  if (it.atkSpd) b.push('+' + Math.round(it.atkSpd * 100) + '% скор. атаки');
+  return it.name + ' (' + b.join(', ') + ')';
+}
+
+// характеристики игрока = база класса + уровни + банки + надетые предметы
+function recalcStats() {
+  const cls = player.cls;
+  let dmgMul = 1, armor = player.defPots * 2, hpB = 0, spd = 0, atk = 1 + 0.15 * player.dexPots;
+  for (const s of SLOTS) {
+    const it = player.equip[s];
+    if (!it) continue;
+    dmgMul += it.dmg || 0;
+    armor += it.armor || 0;
+    hpB += it.hp || 0;
+    spd += it.speed || 0;
+    atk += it.atkSpd || 0;
+  }
+  player.dmg = player.baseDmg * dmgMul;
+  player.maxHp = Math.round(player.baseHp + hpB);
+  player.hp = Math.min(player.hp, player.maxHp);
+  player.armor = armor;
+  player.speed = cls.speed + spd;
+  player.atkRate = cls.fireRate * atk;
+}
+
+// подобрать предмет: в пустой слот сразу, иначе в рюкзак; false — некуда
+function giveItem(it) {
+  if (!player.equip[it.slot]) {
+    player.equip[it.slot] = it;
+    recalcStats();
+    banner = { text: 'Надето: ' + it.name, sub: fmtItem(it), t: 2.6 };
+    return true;
+  }
+  const free = player.bags.indexOf(null);
+  if (free >= 0) {
+    player.bags[free] = it;
+    banner = { text: 'В рюкзак: ' + it.name, sub: fmtItem(it), t: 2.4 };
+    return true;
+  }
+  return false;
+}
+
 // ================= мобы (привязаны к зонам мира) =================
 const KINDS = {
   // лес — окраина мира
@@ -211,8 +317,9 @@ const KINDS = {
 
 function spawnEnemy(kindKey, x, y) {
   const k = KINDS[kindKey];
+  const hp = Math.round(k.hp * worldHpMul());
   enemies.push({
-    kind: kindKey, k, x, y, r: k.r, hp: k.hp, maxHp: k.hp,
+    kind: kindKey, k, x, y, r: k.r, hp, maxHp: hp,
     home: { x, y },
     shootT: rand(0.5, k.shootCd || 1), strafeDir: Math.random() < 0.5 ? 1 : -1,
     seed: rand(0, TAU), touchT: 0, reborn: false,
@@ -391,7 +498,7 @@ const BOSSDEFS = {
     update(b, dt) {
       const ph = b.hp > b.maxHp * 0.66 ? 1 : b.hp > b.maxHp * 0.33 ? 2 : 3;
       const dC = Math.hypot(b.x - CX, b.y - CY);
-      if (dC > R_ARENA * 0.45) {
+      if (dC > R_CITADEL * 0.45) {
         const aC = Math.atan2(CY - b.y, CX - b.x);
         b.x += Math.cos(aC) * 70 * dt;
         b.y += Math.sin(aC) * 70 * dt;
@@ -433,7 +540,7 @@ const BOSSDEFS = {
         if (b.tTp <= 0) {
           b.tTp = 4;
           burst(b.x, b.y, 18, b.color);
-          const ta = rand(0, TAU), td = rand(120, 200);
+          const ta = rand(0, TAU), td = rand(140, R_CITADEL * 0.55);
           b.x = CX + Math.cos(ta) * td;
           b.y = CY + Math.sin(ta) * td;
           burst(b.x, b.y, 18, b.color);
@@ -450,9 +557,10 @@ function spawnLord(i) {
   const def = BOSSDEFS[s.lord];
   const ang = sectorCenterAng(i), rad = (R_ARENA + R_LORDS) / 2;
   const hx = CX + Math.cos(ang) * rad, hy = CY + Math.sin(ang) * rad;
+  const hp = Math.round(def.hp * worldHpMul());
   const b = {
     key: s.lord, def, name: def.name, sector: i,
-    hp: def.hp, maxHp: def.hp, r: def.r, color: def.color,
+    hp, maxHp: hp, r: def.r, color: def.color,
     x: hx, y: hy, home: { x: hx, y: hy },
     touchT: 0,
   };
@@ -462,9 +570,10 @@ function spawnLord(i) {
 
 function spawnMadGod() {
   const def = BOSSDEFS.madGod;
+  const hp = Math.round(def.hp * worldHpMul());
   const b = {
     key: 'madGod', def, name: def.name,
-    hp: def.hp, maxHp: def.hp, r: def.r, color: def.color,
+    hp, maxHp: hp, r: def.r, color: def.color,
     x: CX, y: CY - 80, touchT: 0,
   };
   def.init(b);
@@ -535,18 +644,23 @@ function startRun(clsKey) {
   const cls = CLASSES[clsKey];
   player = {
     cls, x: CX, y: WORLD - 170, r: 14,
-    hp: cls.hp, maxHp: cls.hp, dmg: cls.dmg, speed: cls.speed,
+    hp: cls.hp, maxHp: cls.hp, baseHp: cls.hp, dmg: cls.dmg, baseDmg: cls.dmg,
+    speed: cls.speed, atkRate: cls.fireRate,
     level: 1, xp: 0, xpNeed: 25,
-    fireT: 0, abilityT: 0, inv: 0, aimDir: -Math.PI / 2, dexPots: 0,
+    fireT: 0, abilityT: 0, inv: 0, aimDir: -Math.PI / 2,
+    dexPots: 0, defPots: 0, armor: 0,
+    equip: { weapon: null, armor: null, ring: null },
+    bags: [null, null, null],
   };
+  recalcStats();
   bullets = []; ebullets = []; drops = []; particles = [];
   engagedBoss = null; lordsLeft = 5; finalT = 0; finalActive = false;
+  worldNum = 1; nextPortal = null;
   runTime = 0; killCount = 0; shake = 0; lastZone = 'forest';
   genWorld();
   banner = { text: 'Лес Эха', sub: 'Пробивайтесь от окраин мира к центру — там ждёт Безумный Бог', t: 4 };
   document.getElementById('menu').classList.add('hidden');
   document.getElementById('gameover').classList.add('hidden');
-  document.getElementById('victory').classList.add('hidden');
   state = 'play';
 }
 window.startRun = startRun;
@@ -555,7 +669,6 @@ function toMenu() {
   state = 'menu';
   Music.setBoss(false);
   document.getElementById('gameover').classList.add('hidden');
-  document.getElementById('victory').classList.add('hidden');
   document.getElementById('menu').classList.remove('hidden');
 }
 window.toMenu = toMenu;
@@ -566,8 +679,9 @@ function gainXp(n) {
     player.xp -= player.xpNeed;
     player.level++;
     player.xpNeed = 25 + (player.level - 1) * 18;
-    player.maxHp += 14;
-    player.dmg *= 1.07;
+    player.baseHp += 14;
+    player.baseDmg += player.cls.dmg * 0.07; // линейный рост — иначе к мирам 3+ ваншоты всего
+    recalcStats();
     player.hp = Math.min(player.maxHp, player.hp + player.maxHp * 0.45);
     Music.sfx('levelup');
     if (!banner || banner.small) banner = { text: 'Уровень ' + player.level + '!', sub: '', t: 1.4, small: true };
@@ -577,7 +691,11 @@ function gainXp(n) {
 
 function hurtPlayer(dmg) {
   if (player.inv > 0 || state !== 'play') return;
-  player.hp -= dmg;
+  // множитель мира и броня; «пол» урона — процентный (15% масштабированного),
+  // чтобы броня не делала игрока бессмертным на дальних мирах
+  const scaled = dmg * worldDmgMul();
+  const taken = Math.max(1, Math.max(Math.round(scaled * 0.15), Math.round(scaled) - player.armor));
+  player.hp -= taken;
   player.inv = 0.6;
   shake = Math.max(shake, 7);
   Music.sfx('hurt');
@@ -590,20 +708,29 @@ function hurtPlayer(dmg) {
       ? 'в бою с «' + engagedBoss.name + '»'
       : 'в локации «' + zoneAt(player.x, player.y).name + '»';
     document.getElementById('deathStats').textContent =
-      `${player.cls.name} пал ${where}\nУровень: ${player.level} · Убийств: ${killCount} · Время: ${fmtTime(runTime)}`;
+      `${player.cls.name} пал ${where}\nМир: ${worldNum} · Уровень: ${player.level} · Убийств: ${killCount} · Время: ${fmtTime(runTime)}`;
     document.getElementById('gameover').classList.remove('hidden');
-    saveRun(false);
+    saveRun();
   }
 }
 
-function win() {
-  if (state !== 'play') return; // размен с боссом: смерть игрока в тот же кадр — победа не засчитывается
-  state = 'win';
+// переход в следующий мир: та же карта, но всё население сильнее
+function nextWorld() {
+  worldNum++;
+  finalActive = false;
+  nextPortal = null;
+  lordsLeft = 5;
+  finalT = 0;
+  engagedBoss = null;
+  bullets = []; ebullets = []; drops = []; particles = [];
+  player.x = CX;
+  player.y = WORLD - 170;
+  genWorld();
+  lastZone = 'forest';
   Music.setBoss(false);
-  document.getElementById('winStats').textContent =
-    `${player.cls.name} · Уровень ${player.level} · Убийств: ${killCount} · Время: ${fmtTime(runTime)}`;
-  document.getElementById('victory').classList.remove('hidden');
-  saveRun(true);
+  Music.sfx('teleport');
+  burst(player.x, player.y, 24, '#f4d47c');
+  banner = { text: 'Мир ' + worldNum, sub: 'Твари этого эха сильнее прежних (+' + Math.round((worldHpMul() - 1) * 100) + '% HP, +' + Math.round((worldDmgMul() - 1) * 100) + '% урона)', t: 4.5 };
 }
 
 function fmtTime(s) {
@@ -654,6 +781,48 @@ function aimAngle() {
   return Math.atan2(mouse.y + cam.y - player.y, mouse.x + cam.x - player.x);
 }
 
+// ================= клики по слотам экипировки =================
+function slotRects() {
+  const size = 42, gap = 6, y = H - size - 12, x0 = 14;
+  const rects = [];
+  SLOTS.forEach((s, i) => rects.push({ kind: 'equip', slot: s, x: x0 + i * (size + gap), y, size }));
+  for (let i = 0; i < 3; i++) {
+    rects.push({ kind: 'bag', idx: i, x: x0 + (i + 3) * (size + gap) + 12, y, size });
+  }
+  return rects;
+}
+
+// вернуть true, если клик/тап пришёлся на слот и обработан
+function uiClick(x, y) {
+  if (state !== 'play' || !player) return false;
+  for (const r of slotRects()) {
+    if (x < r.x || x > r.x + r.size || y < r.y || y > r.y + r.size) continue;
+    if (r.kind === 'equip') {
+      const it = player.equip[r.slot];
+      if (!it) continue; // пустой слот не поглощает ввод (движение/прицел важнее)
+      const free = player.bags.indexOf(null);
+      if (free >= 0) {
+        player.bags[free] = it;
+        player.equip[r.slot] = null;
+        recalcStats();
+        banner = { text: 'Снято: ' + it.name, sub: '', t: 1.4, small: true };
+      } else {
+        banner = { text: 'Рюкзак полон', sub: '', t: 1.4, small: true };
+      }
+    } else {
+      const it = player.bags[r.idx];
+      if (!it) continue;
+      // надеть из рюкзака (обмен с текущим предметом слота)
+      player.bags[r.idx] = player.equip[it.slot] || null;
+      player.equip[it.slot] = it;
+      recalcStats();
+      banner = { text: 'Надето: ' + it.name, sub: fmtItem(it), t: 2.2, small: true };
+    }
+    return true;
+  }
+  return false;
+}
+
 function spawnBullet(ang, speed, dmg, r, range, pierce) {
   bullets.push({
     x: player.x, y: player.y,
@@ -699,8 +868,8 @@ function update(dt) {
       const k = (R_ARENA + player.r) / dc;
       player.x = CX + dcx * k;
       player.y = CY + dcy * k;
-    } else if (finalActive && dc > R_ARENA - player.r - 6) {
-      const k = (R_ARENA - player.r - 6) / dc;
+    } else if (finalActive && dc > R_CITADEL - player.r - 6) {
+      const k = (R_CITADEL - player.r - 6) / dc;
       player.x = CX + dcx * k;
       player.y = CY + dcy * k;
     }
@@ -731,8 +900,8 @@ function update(dt) {
   if (fireAng !== null) {
     player.aimDir = fireAng;
     if (player.fireT <= 0) {
-      // зелья ловкости: +15% скорости атаки за каждое
-      player.fireT = 1 / (cls.fireRate * (1 + 0.15 * player.dexPots));
+      // atkRate уже включает зелья ловкости и предметы (recalcStats)
+      player.fireT = 1 / player.atkRate;
       for (let i = 0; i < cls.shots; i++) {
         const off = cls.shots === 1 ? 0 : -cls.spread / 2 + (i / (cls.shots - 1)) * cls.spread;
         spawnBullet(fireAng + off, cls.projSpeed, player.dmg, cls.projR, cls.range, cls.pierce);
@@ -807,13 +976,17 @@ function update(dt) {
     e.x = clamp(e.x + vx * dt, e.r, WORLD - e.r);
     e.y = clamp(e.y + vy * dt, e.r, WORLD - e.r);
 
-    // до финала арена запечатана и для мобов
-    if (!finalActive) {
+    // до финала арена запечатана и для мобов; в финале мобы заперты в цитадели
+    {
       let ecx = e.x - CX, ecy = e.y - CY;
       if (ecx === 0 && ecy === 0) ecy = 1;
       const edc = Math.hypot(ecx, ecy);
-      if (edc < R_ARENA + e.r) {
+      if (!finalActive && edc < R_ARENA + e.r) {
         const k2 = (R_ARENA + e.r) / edc;
+        e.x = CX + ecx * k2;
+        e.y = CY + ecy * k2;
+      } else if (finalActive && edc > R_CITADEL - e.r) {
+        const k2 = (R_CITADEL - e.r) / edc;
         e.x = CX + ecx * k2;
         e.y = CY + ecy * k2;
       }
@@ -851,7 +1024,8 @@ function update(dt) {
   let bestBossD = Infinity;
   for (const b of bosses) {
     const d2b = dist2(b.x, b.y, player.x, player.y);
-    if (d2b < 780 * 780) {
+    // Безумный Бог активен всегда: в цитадели разнос может превышать радиус активации
+    if (d2b < 780 * 780 || b.key === 'madGod') {
       b.def.update(b, dt);
       // владыка привязан к своему сектору: не гонится за игроком дальше поводка
       // и не заходит в запечатанную арену
@@ -880,7 +1054,8 @@ function update(dt) {
       }
     }
   }
-  Music.setBoss(!!engagedBoss || finalActive);
+  // после гибели Бога (bosses пуст) боевая музыка выключается, хоть finalActive ещё true
+  Music.setBoss(!!engagedBoss || (finalActive && bosses.length > 0));
 
   // пули игрока
   for (let i = bullets.length - 1; i >= 0; i--) {
@@ -930,7 +1105,7 @@ function update(dt) {
       continue;
     }
     killCount++;
-    gainXp(e.k.xp);
+    gainXp(Math.round(e.k.xp * worldXpMul()));
     burst(e.x, e.y, 10, e.k.color);
     if (Math.random() < e.k.drop) drops.push({ x: e.x, y: e.y, type: 'hp' });
     enemies.splice(i, 1);
@@ -941,18 +1116,30 @@ function update(dt) {
     const b = bosses[i];
     if (b.hp > 0) continue;
     killCount++;
-    gainXp(b.def.xp);
+    gainXp(Math.round(b.def.xp * worldXpMul()));
     burst(b.x, b.y, 60, b.color);
     burst(b.x, b.y, 40, '#f4d47c');
     shake = Math.max(shake, 14);
     Music.sfx('explode');
     if (b.key === 'madGod') {
       bosses.splice(i, 1);
-      win();
+      if (state !== 'play') continue; // размен: смерть игрока в тот же кадр — мир не засчитывается
+      // сумка с бронёй Безумного Бога + портал в следующий мир
+      ebullets = [];
+      const godArmor = makeItem('armor', worldNum + 1, LORD_GENITIVE.madGod);
+      godArmor.hp = 30 + 10 * worldNum;
+      drops.push({ x: CX, y: CY + 80, type: 'item', item: godArmor, godBag: true });
+      nextPortal = { x: CX, y: CY, charge: 0 };
+      Music.setBoss(false);
+      banner = { text: 'Мир ' + worldNum + ' пройден!', sub: 'Заберите сумку с бронёй и шагните в портал — дальше сильнее', t: 5 };
       continue;
     }
-    // владыка: зелье ловкости + лечение
-    drops.push({ x: b.x, y: b.y, type: 'dex' });
+    // владыка: банка (ловкость или защита) + предмет своей стихии + лечение
+    drops.push({ x: b.x, y: b.y, type: Math.random() < 0.5 ? 'dex' : 'def' });
+    drops.push({
+      x: b.x + rand(-45, 45), y: b.y + rand(-45, 45),
+      type: 'item', item: makeItem(SLOTS[Math.floor(rand(0, 3))], worldNum, LORD_GENITIVE[b.key]),
+    });
     for (let j = 0; j < 2; j++) drops.push({ x: b.x + rand(-55, 55), y: b.y + rand(-55, 55), type: 'hp' });
     bosses.splice(i, 1);
     lordsLeft--;
@@ -964,18 +1151,38 @@ function update(dt) {
     }
   }
 
+  // портал в следующий мир: «канал» — нужно постоять внутри 1.5 с,
+  // чтобы не улететь в новый мир случайно (мимо сумки Безумного Бога)
+  if (nextPortal && state === 'play') {
+    if (dist2(player.x, player.y, nextPortal.x, nextPortal.y) < 42 * 42) {
+      nextPortal.charge += dt;
+      if (nextPortal.charge >= 1.5) nextWorld();
+    } else {
+      nextPortal.charge = 0;
+    }
+  }
+
   // финальный призыв: всех переносит в центральную арену
   if (finalT > 0 && state === 'play') {
     finalT -= dt;
     if (finalT <= 0) {
       finalActive = true;
+      // отдельная локация: внешний мир остаётся позади
       player.x = CX;
-      player.y = CY + R_ARENA - 90;
-      bullets = []; ebullets = [];
+      player.y = CY + R_CITADEL - 110;
+      bullets = []; ebullets = []; enemies = [];
+      // ценный несобранный лут (банки/предметы) переносится в цитадель к игроку
+      const keep = drops.filter(d => d.type === 'dex' || d.type === 'def' || d.type === 'item');
+      keep.forEach((d, ki) => {
+        d.x = player.x + (ki - (keep.length - 1) / 2) * 44;
+        d.y = player.y - 64;
+      });
+      drops = keep;
+      lastZone = 'citadel';
       spawnMadGod();
       Music.sfx('teleport');
       burst(player.x, player.y, 24, '#f4d47c');
-      banner = { text: 'Безумный Бог', sub: 'Финальная битва! Из арены нет выхода', t: 3 };
+      banner = { text: 'Цитадель Безумного Бога', sub: 'Финальная битва! Из цитадели нет выхода', t: 3.2 };
     }
   }
 
@@ -997,10 +1204,25 @@ function update(dt) {
     if (dist2(d.x, d.y, player.x, player.y) < 26 * 26) {
       if (d.type === 'dex') {
         player.dexPots++;
+        recalcStats();
         Music.sfx('levelup');
         // не затирать сюжетный баннер («Все владыки пали!» и т.п.)
-        if (!banner || banner.small) banner = { text: 'Скорость атаки +15%!', sub: '', t: 1.5, small: true };
+        if (!banner || banner.small) banner = { text: 'Ловкость! Скорость атаки +15%', sub: '', t: 1.5, small: true };
         burst(d.x, d.y, 12, '#f4d47c');
+      } else if (d.type === 'def') {
+        player.defPots++;
+        recalcStats();
+        Music.sfx('levelup');
+        if (!banner || banner.small) banner = { text: 'Защита! Броня +2', sub: '', t: 1.5, small: true };
+        burst(d.x, d.y, 12, '#9ab0c8');
+      } else if (d.type === 'item') {
+        if (!giveItem(d.item)) {
+          // инвентарь полон — предмет остаётся лежать
+          if (!banner) banner = { text: 'Инвентарь полон', sub: 'Снимите или замените предмет кликом по слотам внизу', t: 1.6, small: true };
+          continue;
+        }
+        Music.sfx('levelup');
+        burst(d.x, d.y, 18, SLOT_COLORS[d.item.slot]);
       } else {
         player.hp = Math.min(player.maxHp, player.hp + 30);
         Music.sfx('pickup');
@@ -1036,6 +1258,13 @@ function update(dt) {
       life: rand(0.6, 1.2), maxLife: 1.2,
       color: Math.random() < 0.5 ? '#ff9838' : '#ffc060', r: rand(1.5, 3),
     });
+  } else if (z.key === 'citadel' && Math.random() < dt * 10) {
+    particles.push({
+      x: CX + rand(-R_CITADEL, R_CITADEL) * 0.9, y: CY + rand(-R_CITADEL, R_CITADEL) * 0.9,
+      vx: rand(-8, 8), vy: rand(-40, -18),
+      life: rand(0.8, 1.6), maxLife: 1.6,
+      color: '#e8c05a', r: rand(1.5, 2.5),
+    });
   } else if (z.key === 'storm' && Math.random() < dt * 8) {
     particles.push({
       x: clamp(cam.x + rand(0, W), 0, WORLD), y: clamp(cam.y + rand(0, H), 0, WORLD),
@@ -1057,6 +1286,34 @@ function draw() {
   ctx.save();
   ctx.translate(-cam.x + sx, -cam.y + sy);
 
+  // ----- отдельная локация финала: Цитадель Безумного Бога -----
+  if (finalActive) {
+    // пустота вокруг цитадели
+    ctx.fillStyle = '#07050c';
+    ctx.fillRect(cam.x - 60, cam.y - 60, W + 120, H + 120);
+    // обсидиановый зал
+    ctx.fillStyle = '#151020';
+    ctx.beginPath(); ctx.arc(CX, CY, R_CITADEL, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#1c1428';
+    ctx.beginPath(); ctx.arc(CX, CY, R_CITADEL * 0.55, 0, TAU); ctx.fill();
+    // руны по кругу
+    ctx.strokeStyle = 'rgba(232,192,90,0.4)';
+    ctx.lineWidth = 2.5;
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * TAU + gameTime * 0.15;
+      const rx = CX + Math.cos(a) * R_CITADEL * 0.8, ry = CY + Math.sin(a) * R_CITADEL * 0.8;
+      ctx.beginPath();
+      ctx.moveTo(rx, ry - 10); ctx.lineTo(rx + 7, ry); ctx.lineTo(rx, ry + 10); ctx.lineTo(rx - 7, ry);
+      ctx.closePath(); ctx.stroke();
+    }
+    // стены цитадели
+    ctx.strokeStyle = '#e8c05a';
+    ctx.lineWidth = 12;
+    ctx.beginPath(); ctx.arc(CX, CY, R_CITADEL, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = 'rgba(232,192,90,0.25)';
+    ctx.lineWidth = 26;
+    ctx.beginPath(); ctx.arc(CX, CY, R_CITADEL + 18, 0, TAU); ctx.stroke();
+  } else {
   // ----- ландшафт: кольца мира -----
   // лес — базовый пол до края карты
   ctx.fillStyle = '#0e1510';
@@ -1108,11 +1365,63 @@ function draw() {
     if (d.x < cam.x - 90 || d.x > cam.x + W + 90 || d.y < cam.y - 90 || d.y > cam.y + H + 90) continue;
     drawDecor(d);
   }
+  } // конец обычного мира (else от цитадели)
 
   if (player) {
-    // зелья
+    // портал в следующий мир
+    if (nextPortal) {
+      const pr = 30 + Math.sin(gameTime * 4) * 4;
+      const pg = ctx.createRadialGradient(nextPortal.x, nextPortal.y, 4, nextPortal.x, nextPortal.y, pr + 18);
+      pg.addColorStop(0, 'rgba(255,240,200,0.95)');
+      pg.addColorStop(0.6, 'rgba(232,192,90,0.55)');
+      pg.addColorStop(1, 'rgba(232,192,90,0)');
+      ctx.fillStyle = pg;
+      ctx.beginPath(); ctx.arc(nextPortal.x, nextPortal.y, pr + 18, 0, TAU); ctx.fill();
+      ctx.strokeStyle = '#f4d47c';
+      ctx.lineWidth = 3;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(nextPortal.x, nextPortal.y, pr - i * 7, gameTime * (2 + i), gameTime * (2 + i) + 4.2);
+        ctx.stroke();
+      }
+      // прогресс «канала» входа
+      if (nextPortal.charge > 0) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(nextPortal.x, nextPortal.y, pr + 26, -Math.PI / 2, -Math.PI / 2 + TAU * Math.min(1, nextPortal.charge / 1.5));
+        ctx.stroke();
+      }
+    }
+
+    // зелья и сумки с предметами
     for (const d of drops) {
-      if (d.type === 'dex') {
+      if (d.type === 'item') {
+        // лут-бэг в духе RotMG, камень — цвет слота
+        const R = d.godBag ? 14 : 11;
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath(); ctx.ellipse(d.x, d.y + R - 2, R, 4, 0, 0, TAU); ctx.fill();
+        const bob = Math.sin(gameTime * 4) * 2;
+        ctx.fillStyle = '#8a5a2c';
+        ctx.beginPath(); ctx.arc(d.x, d.y + bob, R, 0, TAU); ctx.fill();
+        ctx.strokeStyle = d.godBag ? '#e8c05a' : '#5c3c1c';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(d.x, d.y + bob, R, 0, TAU); ctx.stroke();
+        ctx.fillStyle = SLOT_COLORS[d.item.slot];
+        ctx.beginPath();
+        ctx.moveTo(d.x, d.y - 5 + bob); ctx.lineTo(d.x + 5, d.y + bob);
+        ctx.lineTo(d.x, d.y + 5 + bob); ctx.lineTo(d.x - 5, d.y + bob);
+        ctx.closePath(); ctx.fill();
+      } else if (d.type === 'def') {
+        ctx.fillStyle = '#9ab0c8';
+        ctx.beginPath(); ctx.arc(d.x, d.y, 9, 0, TAU); ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(d.x, d.y - 5); ctx.lineTo(d.x + 4, d.y - 2);
+        ctx.lineTo(d.x + 4, d.y + 1); ctx.lineTo(d.x, d.y + 5);
+        ctx.lineTo(d.x - 4, d.y + 1); ctx.lineTo(d.x - 4, d.y - 2);
+        ctx.closePath(); ctx.stroke();
+      } else if (d.type === 'dex') {
         ctx.fillStyle = '#e8b23c';
         ctx.beginPath(); ctx.arc(d.x, d.y, 9, 0, TAU); ctx.fill();
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
@@ -1387,7 +1696,7 @@ function drawUI() {
   ctx.textAlign = 'left';
   ctx.fillStyle = '#cdd8e4';
   ctx.font = '13px system-ui';
-  ctx.fillText(player.cls.name + ' · ур. ' + player.level + (player.dexPots ? ' · скор. атаки +' + player.dexPots * 15 + '%' : ''), 18, 66);
+  ctx.fillText(player.cls.name + ' · ур. ' + player.level, 18, 66);
 
   // умение
   const cd = player.abilityT;
@@ -1396,18 +1705,27 @@ function drawUI() {
   ctx.font = '11px system-ui';
   ctx.fillText(player.cls.abilityName + (cd > 0 ? ' · ' + cd.toFixed(1) + 'с' : ' — готово [Space]'), 18, 102);
 
-  // правый блок: владыки, зона, звук, время + миникарта
+  // характеристики: на них влияют уровень, банки и надетые предметы
+  ctx.fillStyle = '#8a9cb0';
+  ctx.font = '11px system-ui';
+  ctx.fillText(
+    'Урон ' + Math.round(player.dmg)
+    + ' · Броня ' + player.armor
+    + ' · Скор. ' + Math.round(player.speed)
+    + ' · Атака ' + player.atkRate.toFixed(1) + '/с', 18, 120);
+
+  // правый блок: мир, владыки, зона, звук, время + миникарта
   ctx.textAlign = 'right';
   ctx.fillStyle = '#f4d47c';
   ctx.font = 'bold 13px system-ui';
-  ctx.fillText(finalActive ? 'Финальная битва!' : 'Владык осталось: ' + lordsLeft + ' / 5', W - 18, 24);
+  ctx.fillText('Мир ' + worldNum + (finalActive ? ' · Финальная битва!' : ' · Владык: ' + lordsLeft + ' / 5'), W - 18, 24);
   ctx.fillStyle = '#9fb0c3';
   ctx.font = '12px system-ui';
   ctx.fillText(zoneAt(player.x, player.y).name, W - 18, 44);
   ctx.fillStyle = '#66788e';
   ctx.font = '11px system-ui';
   ctx.fillText('M · звук: ' + (Music.isMuted() ? 'выкл' : 'вкл') + ' · ' + fmtTime(runTime), W - 18, 64);
-  drawMinimap();
+  if (!finalActive) drawMinimap(); // в Цитадели карта мира не нужна
 
   // HP ближайшего босса (на узких экранах — ниже минимапы, чтобы не наезжать на бары)
   if (engagedBoss) {
@@ -1439,6 +1757,41 @@ function drawUI() {
     }
     ctx.globalAlpha = 1;
   }
+
+  // панель экипировки: 3 слота (оружие/панцирь/амулет) + рюкзак на 3 места
+  ctx.textAlign = 'center';
+  for (const r of slotRects()) {
+    const it = r.kind === 'equip' ? player.equip[r.slot] : player.bags[r.idx];
+    ctx.fillStyle = 'rgba(10,14,20,0.72)';
+    ctx.fillRect(r.x, r.y, r.size, r.size);
+    ctx.strokeStyle = r.kind === 'equip'
+      ? (it ? SLOT_COLORS[r.slot] : 'rgba(255,255,255,0.28)')
+      : 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(r.x + 1, r.y + 1, r.size - 2, r.size - 2);
+    const cx2 = r.x + r.size / 2, cy2 = r.y + r.size / 2;
+    if (it) {
+      // ромб цвета слота + тир
+      ctx.fillStyle = SLOT_COLORS[it.slot];
+      ctx.beginPath();
+      ctx.moveTo(cx2, cy2 - 11); ctx.lineTo(cx2 + 11, cy2);
+      ctx.lineTo(cx2, cy2 + 11); ctx.lineTo(cx2 - 11, cy2);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#10151c';
+      ctx.font = 'bold 10px system-ui';
+      ctx.fillText('T' + it.tier, cx2, cy2 + 1);
+    } else if (r.kind === 'equip') {
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.font = 'bold 15px system-ui';
+      ctx.fillText(SLOT_GLYPHS[r.slot], cx2, cy2 + 1);
+    }
+  }
+  ctx.fillStyle = '#66788e';
+  ctx.font = '10px system-ui';
+  ctx.textAlign = 'left';
+  const sr = slotRects();
+  ctx.fillText('экипировка', sr[0].x + 2, sr[0].y - 9);
+  ctx.fillText('рюкзак · клик — надеть/снять', sr[3].x + 2, sr[3].y - 9);
 
   // сенсорный интерфейс
   if (IS_TOUCH && state === 'play') {

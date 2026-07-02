@@ -19,7 +19,7 @@
 
 <div id="menu" class="overlay">
   <h1>Realm of Echoes</h1>
-  <p class="tagline">Открытый мир в духе Realm of the Mad God: из леса на окраинах — через земли исполинов — к пяти владыкам стихий. Когда падёт последний, всех призовут на арену Безумного Бога.</p>
+  <p class="tagline">Открытый мир в духе Realm of the Mad God: из леса на окраинах — через земли исполинов — к пяти владыкам стихий. Когда падёт последний, всех призовут в Цитадель Безумного Бога, а за его гибелью ждёт следующий мир — сильнее прежнего. Собирайте предметы и банки, прокачивайте характеристики.</p>
   <div class="cards">
     <button class="card warrior" onclick="startRun('warrior')">
       <canvas class="card-sprite" data-cls="warrior" width="80" height="80"></canvas>
@@ -49,23 +49,16 @@
       </ul>
     </button>
   </div>
-  <p class="hint">WASD — движение &middot; атака — автоматически по ближайшему врагу &middot; зажать ЛКМ — ручной прицел &middot; Space/ПКМ — умение &middot; M — музыка &middot; P — пауза</p>
-  <p class="hint touch-hint">На телефоне: левая половина экрана — джойстик, кнопка справа внизу — умение</p>
+  <p class="hint">WASD — движение &middot; атака — автоматически по ближайшему врагу &middot; зажать ЛКМ — ручной прицел &middot; Space/ПКМ — умение &middot; клик по слотам внизу — надеть/снять предмет &middot; M — музыка &middot; P — пауза</p>
+  <p class="hint touch-hint">На телефоне: левая половина экрана — джойстик, кнопка справа внизу — умение, тап по слотам — экипировка</p>
   <div id="records"></div>
-  <p class="hint dim">Звук включится после выбора класса &middot; v1.1.0</p>
+  <p class="hint dim">Звук включится после выбора класса &middot; v1.2.0</p>
 </div>
 
 <div id="gameover" class="overlay hidden">
   <h1 class="red">Вы погибли</h1>
   <p id="deathStats" class="stats"></p>
   <button class="btn" onclick="toMenu()">Попробовать снова</button>
-</div>
-
-<div id="victory" class="overlay hidden">
-  <h1 class="gold">Победа!</h1>
-  <p class="tagline">Безумный Бог пал. Королевство эха свободно.</p>
-  <p id="winStats" class="stats"></p>
-  <button class="btn" onclick="toMenu()">Сыграть ещё раз</button>
 </div>
 
 <script src="js/audio.js"></script>
