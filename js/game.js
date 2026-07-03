@@ -53,6 +53,18 @@ function zoneAt(x, y) {
   return { key: 'forest', name: 'Лес Эха' };
 }
 
+// палитры тайлов земли: несколько шейдов на зону + редкая деталь (трава/угли/руны)
+const TILES = {
+  forest: { shades: ['#0f1a0e', '#12200f', '#0d1710', '#16260f'], detail: '#2a4a24', dchance: 0.14 },
+  titans: { shades: ['#201f19', '#26251d', '#1b1a15', '#2b2820'], detail: '#3a3428', dchance: 0.12 },
+  nature: { shades: ['#12240e', '#173010', '#0f1e0c', '#1c3a12'], detail: '#3a7024', dchance: 0.16 },
+  fire:   { shades: ['#1e0f08', '#28140a', '#170b06', '#301810'], detail: '#c8501c', dchance: 0.15 },
+  storm:  { shades: ['#0e1424', '#121a2e', '#0a0f1c', '#161f38'], detail: '#3a6ac0', dchance: 0.12 },
+  moon:   { shades: ['#160f22', '#1c1430', '#100a1a', '#241838'], detail: '#7a4ab0', dchance: 0.13 },
+  ocean:  { shades: ['#0b1c1e', '#0f262a', '#08161a', '#123236'], detail: '#2e7a7e', dchance: 0.14 },
+  arena:  { shades: ['#140c18', '#1a1020', '#100a14', '#1e1428'], detail: '#3a2848', dchance: 0.10 },
+};
+
 // ================= состояние =================
 let state = 'menu'; // menu | play | pause | dead | win
 let player = null;
@@ -845,6 +857,7 @@ function startRun(clsKey) {
     level: 1, xp: 0, xpNeed: 25,
     fireT: 0, abilityT: 0, inv: 0, aimDir: -Math.PI / 2,
     dexPots: 0, defPots: 0, armor: 0, slowT: 0, burnT: 0, fame: 0,
+    walk: 0, moving: false, faceX: 0,
     equip: { weapon: null, armor: null, ring: null },
     bags: [null, null, null],
   };
@@ -1172,6 +1185,12 @@ function update(dt) {
     const spd = player.speed * (player.slowT > 0 ? 0.55 : 1); // замедление от воды
     player.x = clamp(player.x + (mx / l) * mag * spd * dt, player.r, WORLD - player.r);
     player.y = clamp(player.y + (my / l) * mag * spd * dt, player.r, WORLD - player.r);
+    player.moving = true;
+    player.faceX = mx;
+    player.walk += dt * 12; // фаза шага для анимации
+  } else {
+    player.moving = false;
+    player.walk += dt * 3.5; // покачивание в покое
   }
   // барьер арены: снаружи — пока живы владыки, изнутри — во время финала;
   // в Зионе — стены города
@@ -1798,29 +1817,31 @@ function draw() {
     ctx.lineWidth = 26;
     ctx.beginPath(); ctx.arc(CX, CY, R_CITADEL + 18, 0, TAU); ctx.stroke();
   } else {
-  // ----- ландшафт: кольца мира -----
-  // лес — базовый пол до края карты
-  ctx.fillStyle = '#0e1510';
-  ctx.fillRect(0, 0, WORLD, WORLD);
-  // земли исполинов
-  ctx.fillStyle = '#191512';
-  ctx.beginPath(); ctx.arc(CX, CY, R_TITANS, 0, TAU); ctx.fill();
-  // сектора владык
-  SECTORS.forEach((s, i) => {
-    const a0 = Math.PI / 2 - TAU / 10 + i * TAU / 5;
-    const a1 = a0 + TAU / 5;
-    ctx.fillStyle = s.floor;
-    ctx.beginPath();
-    ctx.arc(CX, CY, R_LORDS, a0, a1);
-    ctx.arc(CX, CY, R_ARENA, a1, a0, true);
-    ctx.closePath();
-    ctx.fill();
-  });
-  // арена
-  ctx.fillStyle = '#120c16';
-  ctx.beginPath(); ctx.arc(CX, CY, R_ARENA, 0, TAU); ctx.fill();
-  // границы колец
-  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+  // ----- ландшафт: тайловая земля по зонам -----
+  // тёмный фон за краем карты
+  ctx.fillStyle = '#0a0d10';
+  ctx.fillRect(cam.x - 40, cam.y - 40, W + 80, H + 80);
+  // только видимые тайлы; шейд и деталь — от детерминированного хэша тайла
+  const TS = 64;
+  const tx0 = Math.max(0, Math.floor(cam.x / TS)), tx1 = Math.min(Math.floor((WORLD - 1) / TS), Math.floor((cam.x + W) / TS));
+  const ty0 = Math.max(0, Math.floor(cam.y / TS)), ty1 = Math.min(Math.floor((WORLD - 1) / TS), Math.floor((cam.y + H) / TS));
+  for (let ty = ty0; ty <= ty1; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) {
+      const wx = tx * TS, wy = ty * TS;
+      const t = TILES[zoneAt(wx + TS / 2, wy + TS / 2).key] || TILES.forest;
+      // перемешанный хэш (иначе младший бит даёт «шахматку» tx^ty)
+      let h = (tx * 374761393 + ty * 668265263) >>> 0;
+      h = ((h ^ (h >>> 13)) * 1274126177) >>> 0;
+      ctx.fillStyle = t.shades[h % t.shades.length];
+      ctx.fillRect(wx, wy, TS + 1, TS + 1); // +1 против швов при дробном сдвиге камеры
+      if ((h & 255) / 255 < t.dchance) {
+        ctx.fillStyle = t.detail;
+        ctx.fillRect(wx + (h >> 8 & 55) + 4, wy + (h >> 14 & 55) + 4, 3, 3);
+      }
+    }
+  }
+  // мягкие границы колец
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
   ctx.lineWidth = 3;
   for (const r of [R_TITANS, R_LORDS]) {
     ctx.beginPath(); ctx.arc(CX, CY, r, 0, TAU); ctx.stroke();
@@ -1829,16 +1850,6 @@ function draw() {
   ctx.strokeStyle = finalActive ? '#e8c05a' : 'rgba(232,192,90,0.45)';
   ctx.lineWidth = 9;
   ctx.beginPath(); ctx.arc(CX, CY, R_ARENA, 0, TAU); ctx.stroke();
-  // сетка
-  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
-  ctx.lineWidth = 1;
-  const gs = 100;
-  const gx0 = Math.max(0, Math.floor(cam.x / gs) * gs), gx1 = Math.min(WORLD, cam.x + W);
-  const gy0 = Math.max(0, Math.floor(cam.y / gs) * gs), gy1 = Math.min(WORLD, cam.y + H);
-  ctx.beginPath();
-  for (let x = gx0; x <= gx1; x += gs) { ctx.moveTo(x, Math.max(0, cam.y)); ctx.lineTo(x, gy1); }
-  for (let y = gy0; y <= gy1; y += gs) { ctx.moveTo(Math.max(0, cam.x), y); ctx.lineTo(gx1, y); }
-  ctx.stroke();
   // стены мира
   ctx.strokeStyle = '#33465c';
   ctx.lineWidth = 6;
@@ -1973,12 +1984,27 @@ function draw() {
     // игрок
     const inv = player.inv > 0 && Math.floor(gameTime * 14) % 2 === 0;
     ctx.globalAlpha = inv ? 0.4 : 1;
+    // мягкий свет под игроком (цвет класса)
+    const plg = ctx.createRadialGradient(player.x, player.y, 4, player.x, player.y, 48);
+    plg.addColorStop(0, player.cls.color + '40');
+    plg.addColorStop(1, player.cls.color + '00');
+    ctx.fillStyle = plg;
+    ctx.beginPath(); ctx.arc(player.x, player.y, 48, 0, TAU); ctx.fill();
+    // тень
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath(); ctx.ellipse(player.x, player.y + 16, 15, 6, 0, 0, TAU); ctx.fill();
-    const bob = Math.sin(gameTime * 6) * 2;
+    // спрайт: покачивание + squash/stretch + наклон в направлении бега
+    const bob = Math.sin(player.walk) * (player.moving ? 3 : 1.5);
+    const squash = 1 + Math.sin(player.walk * 2) * (player.moving ? 0.07 : 0.025);
+    const lean = clamp(player.faceX, -1, 1) * (player.moving ? 0.14 : 0) * (0.6 + 0.4 * Math.sin(player.walk));
+    ctx.save();
+    ctx.translate(player.x, player.y - 8 + bob);
+    ctx.rotate(lean);
+    ctx.scale(1 / squash, squash);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(sprites[player.cls.key], Math.round(player.x - 22), Math.round(player.y - 30 + bob), 44, 44);
+    ctx.drawImage(sprites[player.cls.key], -22, -22, 44, 44);
     ctx.imageSmoothingEnabled = true;
+    ctx.restore();
     // указатель прицела (направление автоатаки или мыши)
     const aim = player.aimDir !== undefined ? player.aimDir : aimAngle();
     ctx.strokeStyle = 'rgba(255,255,255,0.85)';
@@ -1989,14 +2015,34 @@ function draw() {
     ctx.stroke();
     ctx.globalAlpha = 1;
 
-    // пули игрока
+    // свечение снарядов (аддитивный проход — эффект «блум»)
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.32;
+    for (const b of bullets) {
+      ctx.fillStyle = b.color;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 2.2, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 0.28;
+    for (const b of ebullets) {
+      ctx.fillStyle = b.color;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 1.9, 0, TAU); ctx.fill();
+    }
+    // частицы тоже светятся
+    for (const p of particles) {
+      ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1) * 0.7;
+      ctx.fillStyle = p.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 1.6, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    // ядра снарядов
     for (const b of bullets) {
       ctx.fillStyle = b.color;
       ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
       ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 0.45, 0, TAU); ctx.fill();
     }
-    // пули врагов
     for (const b of ebullets) {
       ctx.fillStyle = b.color;
       ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill();
@@ -2004,8 +2050,7 @@ function draw() {
       ctx.lineWidth = 1.5;
       ctx.stroke();
     }
-
-    // частицы
+    // ядра частиц
     for (const p of particles) {
       ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
       ctx.fillStyle = p.color;
@@ -2106,18 +2151,18 @@ function drawMob(e) {
   const size = Math.max(30, e.r * 2.9);
   ctx.fillStyle = 'rgba(0,0,0,0.3)';
   ctx.beginPath(); ctx.ellipse(e.x, e.y + e.r * 0.85, e.r * 0.95, e.r * 0.35, 0, 0, TAU); ctx.fill();
-  const bob = Math.sin(gameTime * 5 + e.seed) * 1.5;
+  // живое покачивание + лёгкий squash
+  const ph = gameTime * 5 + e.seed;
+  const bob = Math.sin(ph) * 1.6;
+  const squash = 1 + Math.sin(ph * 2) * 0.05;
+  const flip = SPRITES[e.kind].flip && player.x < e.x ? -1 : 1;
+  ctx.save();
+  ctx.translate(e.x, e.y - size * 0.12 + bob);
+  ctx.scale(flip / squash, squash);
   ctx.imageSmoothingEnabled = false;
-  if (SPRITES[e.kind].flip && player.x < e.x) {
-    ctx.save();
-    ctx.translate(e.x, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(spr, Math.round(-size / 2), Math.round(e.y - size * 0.62 + bob), size, size);
-    ctx.restore();
-  } else {
-    ctx.drawImage(spr, Math.round(e.x - size / 2), Math.round(e.y - size * 0.62 + bob), size, size);
-  }
+  ctx.drawImage(spr, -size / 2, -size / 2, size, size);
   ctx.imageSmoothingEnabled = true;
+  ctx.restore();
   if (e.hp < e.maxHp) {
     const w = e.r * 2;
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -2130,6 +2175,14 @@ function drawMob(e) {
 function drawBoss(b) {
   const pulse = 1 + Math.sin(gameTime * 4) * 0.03;
   const size = b.r * 2.6 * pulse;
+  // ореол света стихии (аддитивный)
+  ctx.globalCompositeOperation = 'lighter';
+  const bg = ctx.createRadialGradient(b.x, b.y, 6, b.x, b.y, b.r * 2.4);
+  bg.addColorStop(0, b.color + '55');
+  bg.addColorStop(1, b.color + '00');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 2.4, 0, TAU); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
   ctx.beginPath(); ctx.ellipse(b.x, b.y + b.r * 0.8, b.r, b.r * 0.35, 0, 0, TAU); ctx.fill();
   // аура из вращающихся огней цвета стихии

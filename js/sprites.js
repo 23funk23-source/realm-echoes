@@ -561,8 +561,32 @@ function makeSprite(def) {
   });
   return c;
 }
+
+// тёмная обводка по силуэту + верхний блик — придаёт спрайтам «объём» как в RotMG.
+// Результат 18x18 (по 1px поля); центр сохраняется, отрисовка в те же боксы.
+function outlined(src) {
+  const P = 1, W = src.width + P * 2, H = src.height + P * 2;
+  const sil = document.createElement('canvas'); sil.width = W; sil.height = H;
+  const sg = sil.getContext('2d');
+  sg.imageSmoothingEnabled = false;
+  sg.drawImage(src, P, P);
+  sg.globalCompositeOperation = 'source-in';
+  sg.fillStyle = '#0a0a12';
+  sg.fillRect(0, 0, W, H);
+  const out = document.createElement('canvas'); out.width = W; out.height = H;
+  const og = out.getContext('2d');
+  og.imageSmoothingEnabled = false;
+  for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1], [1, 1]]) og.drawImage(sil, dx, dy);
+  og.drawImage(src, P, P);
+  return out;
+}
+
+const rawSprites = {};
 const sprites = {};
-for (const k in SPRITES) sprites[k] = makeSprite(SPRITES[k]);
+for (const k in SPRITES) {
+  rawSprites[k] = makeSprite(SPRITES[k]);
+  sprites[k] = outlined(rawSprites[k]);
+}
 
 // превью спрайтов классов в карточках меню
 document.querySelectorAll('.card-sprite').forEach(c => {
