@@ -19,7 +19,11 @@
 
 <div id="menu" class="overlay">
   <h1>Realm of Echoes</h1>
-  <p class="tagline">Открытый мир в духе Realm of the Mad God: из леса на окраинах — через земли исполинов — к пяти владыкам стихий. Когда падёт последний, всех призовут в Цитадель Безумного Бога, а за его гибелью ждёт следующий мир — сильнее прежнего. Собирайте предметы и банки, прокачивайте характеристики.</p>
+  <p class="tagline">Открытый мир в духе Realm of the Mad God: старт — в мирном городе Зион, оттуда портал ведёт в мир. Пробейтесь через земли исполинов к пяти владыкам стихий и Безумному Богу в его Цитадели — за каждого босса начисляются очки славы, а рейтинг помнит лучших. За гибелью Бога ждёт следующий мир — сильнее прежнего.</p>
+  <div class="name-row">
+    <label for="playerName">Имя для рейтинга:</label>
+    <input id="playerName" maxlength="14" placeholder="Странник" autocomplete="off">
+  </div>
   <div class="cards">
     <button class="card warrior" onclick="startRun('warrior')">
       <canvas class="card-sprite" data-cls="warrior" width="80" height="80"></canvas>
@@ -52,7 +56,7 @@
   <p class="hint">WASD — движение &middot; атака — автоматически &middot; зажать ЛКМ — ручной прицел &middot; Space/ПКМ — умение &middot; предметы: клик — надеть/снять, перетащить между слотами, за панель или ПКМ — выбросить &middot; M — музыка &middot; P — пауза</p>
   <p class="hint touch-hint">На телефоне: левая половина экрана — джойстик, кнопка справа — умение; предметы: тап — надеть/снять, потащить пальцем — переложить, отпустить вне панели — выбросить</p>
   <div id="records"></div>
-  <p class="hint dim">Звук включится после выбора класса &middot; v1.4.0</p>
+  <p class="hint dim">Звук включится после выбора класса &middot; v1.5.0</p>
 </div>
 
 <div id="gameover" class="overlay hidden">

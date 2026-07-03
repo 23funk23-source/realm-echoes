@@ -50,6 +50,20 @@ h1.gold { color: #ffd85e; text-shadow: 0 0 28px rgba(255, 216, 94, 0.5); }
 .hint    { color: #7c8ea3; font-size: 14px; }
 .hint.dim { color: #55657a; font-size: 12px; }
 
+.name-row { display: flex; align-items: center; gap: 10px; }
+.name-row label { color: #9fb0c3; font-size: 14px; }
+.name-row input {
+  background: #141b23;
+  border: 1px solid #263242;
+  border-radius: 8px;
+  color: #dfe6ee;
+  font-size: 15px;
+  padding: 8px 12px;
+  width: 180px;
+  outline: none;
+}
+.name-row input:focus { border-color: #f4d47c; }
+
 .cards { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
 
 .card {

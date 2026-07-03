@@ -24,6 +24,7 @@ const WORLD = 12800;
 const CX = WORLD / 2, CY = WORLD / 2;
 const R_ARENA = 360;    // запечатанный центр карты (вход в цитадель)
 const R_CITADEL = 560;  // отдельная локация финального боя — Цитадель Безумного Бога
+const R_ZION = 520;     // мирный город Зион — хаб, откуда все стартуют
 const R_LORDS = 2800;   // пояс владык (5 элементальных секторов)
 const R_TITANS = 4600;  // земли исполинов; дальше — лес до края карты
 
@@ -43,6 +44,7 @@ const sectorIdxAt = (x, y) => {
 const sectorCenterAng = i => Math.PI / 2 + i * TAU / 5;
 
 function zoneAt(x, y) {
+  if (inZion) return { key: 'zion', name: 'Зион — мирный город' };
   const d = Math.hypot(x - CX, y - CY);
   if (finalActive && d < R_CITADEL + 60) return { key: 'citadel', name: 'Цитадель Безумного Бога' };
   if (d < R_ARENA) return { key: 'arena', name: 'Запечатанный центр' };
@@ -58,6 +60,21 @@ let bullets = [], ebullets = [], enemies = [], drops = [], particles = [], decor
 let bosses = [], engagedBoss = null;
 let lordsLeft = 5, finalT = 0, finalActive = false;
 let worldNum = 1, nextPortal = null;
+let inZion = false, zionPortal = null; // мирный город: старт забега и портал в мир
+let playerName = 'Странник';
+try { playerName = localStorage.getItem('re-name') || 'Странник'; } catch { /* приватный режим */ }
+
+// онлайн-рейтинг: укажите URL бэкенда (например, bucket kvdb.io) — и таблица станет глобальной
+const LB_URL = null; // напр.: 'https://kvdb.io/ВАШ_BUCKET'
+async function submitScore() {
+  if (!LB_URL || !player || !player.fame) return;
+  try {
+    await fetch(LB_URL + '/' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), {
+      method: 'PUT',
+      body: JSON.stringify({ n: playerName, f: player.fame, w: worldNum, c: player.cls.name }),
+    });
+  } catch { /* рейтинг не должен ломать игру */ }
+}
 
 // следующий мир — та же карта, но твари сильнее (компаунд, чтобы поспевать за игроком)
 const worldHpMul = () => Math.pow(1.45, worldNum - 1);
@@ -72,6 +89,8 @@ const keys = {};
 const mouse = { x: 0, y: 0, down: false };
 
 addEventListener('keydown', e => {
+  // не перехватывать ввод в полях (имя для рейтинга): иначе пробел блокируется, M мьютит
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
   keys[e.code] = true;
   if (e.code === 'Space') { e.preventDefault(); useAbility(); }
   if (e.code === 'KeyM') Music.toggleMute();
@@ -205,23 +224,33 @@ function loadRecords() {
 }
 function saveRun() {
   const all = loadRecords();
-  all.push({ cls: player.cls.name, world: worldNum, level: player.level, kills: killCount, time: Math.round(runTime) });
-  // выше тот, кто дошёл до более дальнего мира; при равенстве — уровень
-  all.sort((a, b) => ((b.world || 1) - (a.world || 1)) || (b.level - a.level));
+  all.push({ name: playerName, fame: player.fame, cls: player.cls.name, world: worldNum, level: player.level, kills: killCount, time: Math.round(runTime) });
+  // рейтинг: выше тот, у кого больше славы; при равенстве — мир, затем уровень
+  // (Number() — защита от мусорных значений в общем localStorage *.github.io)
+  all.sort((a, b) => ((Number(b.fame) || 0) - (Number(a.fame) || 0))
+    || ((Number(b.world) || 1) - (Number(a.world) || 1))
+    || ((Number(b.level) || 1) - (Number(a.level) || 1)));
   try { localStorage.setItem('re-records', JSON.stringify(all.slice(0, 5))); } catch { /* приватный режим */ }
   renderRecords();
+  submitScore(); // в онлайн-рейтинг, если настроен LB_URL
 }
+const escHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 function renderRecords() {
   const el = document.getElementById('records');
   const all = loadRecords();
   el.innerHTML = all.length
-    ? '<h2>Лучшие забеги</h2>' + all.map(r => {
-        const w = r.world || 1;
-        return `<div class="rec${w > 1 ? ' win' : ''}">${w > 1 ? '&#127942;' : '&#128128;'} ${r.cls} · мир ${w} · ур. ${r.level} · убийств: ${r.kills} · ${fmtTime(r.time)}</div>`;
+    ? '<h2>Рейтинг славы</h2>' + all.map((r, i) => {
+        // числовые поля принудительно к числам: localStorage общий для *.github.io
+        const w = Number(r.world) || 1;
+        return `<div class="rec${w > 1 ? ' win' : ''}">${i + 1}. ${escHtml(r.name || 'Безымянный')} · &#11088;${Number(r.fame) || 0} · ${escHtml(r.cls)} · мир ${w} · ур. ${Number(r.level) || 1}</div>`;
       }).join('')
     : '';
 }
 try { renderRecords(); } catch { /* рекорды не должны блокировать запуск игры */ }
+try {
+  const nameInp = document.getElementById('playerName');
+  if (nameInp) nameInp.value = playerName === 'Странник' ? '' : playerName;
+} catch { /* поле имени опционально */ }
 
 // ================= классы =================
 const CLASSES = {
@@ -815,22 +844,49 @@ function startRun(clsKey) {
     speed: cls.speed, atkRate: cls.fireRate,
     level: 1, xp: 0, xpNeed: 25,
     fireT: 0, abilityT: 0, inv: 0, aimDir: -Math.PI / 2,
-    dexPots: 0, defPots: 0, armor: 0, slowT: 0, burnT: 0,
+    dexPots: 0, defPots: 0, armor: 0, slowT: 0, burnT: 0, fame: 0,
     equip: { weapon: null, armor: null, ring: null },
     bags: [null, null, null],
   };
   recalcStats();
-  bullets = []; ebullets = []; drops = []; particles = [];
+  // имя для рейтинга
+  try {
+    const inp = document.getElementById('playerName');
+    if (inp && inp.value.trim()) {
+      playerName = inp.value.trim().slice(0, 14);
+      localStorage.setItem('re-name', playerName);
+    }
+  } catch { /* приватный режим */ }
+  bullets = []; ebullets = []; drops = []; particles = []; decor = []; enemies = []; bosses = [];
   engagedBoss = null; lordsLeft = 5; finalT = 0; finalActive = false;
   worldNum = 1; nextPortal = null; drag = null; telegraphs = [];
-  runTime = 0; killCount = 0; shake = 0; lastZone = 'forest';
-  genWorld();
-  banner = { text: 'Лес Эха', sub: 'Пробивайтесь от окраин мира к центру — там ждёт Безумный Бог', t: 4 };
+  runTime = 0; killCount = 0; shake = 0;
+  // все начинают в мирном Зионе; мир генерируется при входе в портал
+  inZion = true;
+  lastZone = 'zion';
+  player.x = CX;
+  player.y = CY + 220;
+  zionPortal = { x: CX, y: CY - 300, charge: 0 };
+  banner = { text: 'Зион', sub: 'Мирный город. Фонтан лечит; портал на севере ведёт в мир', t: 4 };
   document.getElementById('menu').classList.add('hidden');
   document.getElementById('gameover').classList.add('hidden');
   state = 'play';
 }
 window.startRun = startRun;
+
+// выход из Зиона в игровой мир
+function enterWorld() {
+  inZion = false;
+  zionPortal = null;
+  // позиция ДО генерации: анти-спавн-фильтр в genWorld смотрит на игрока
+  player.x = CX;
+  player.y = WORLD - 170;
+  genWorld();
+  lastZone = 'forest';
+  Music.sfx('teleport');
+  burst(player.x, player.y, 24, '#f4d47c');
+  banner = { text: 'Лес Эха', sub: 'Пробивайтесь от окраин мира к центру — там ждёт Безумный Бог', t: 4 };
+}
 
 function toMenu() {
   state = 'menu';
@@ -875,7 +931,7 @@ function hurtPlayer(dmg) {
       ? 'в бою с «' + engagedBoss.name + '»'
       : 'в локации «' + zoneAt(player.x, player.y).name + '»';
     document.getElementById('deathStats').textContent =
-      `${player.cls.name} пал ${where}\nМир: ${worldNum} · Уровень: ${player.level} · Убийств: ${killCount} · Время: ${fmtTime(runTime)}`;
+      `${playerName} (${player.cls.name}) пал ${where}\n⭐ Слава: ${player.fame} · Мир: ${worldNum} · Уровень: ${player.level} · Убийств: ${killCount} · Время: ${fmtTime(runTime)}`;
     document.getElementById('gameover').classList.remove('hidden');
     saveRun();
   }
@@ -1117,12 +1173,21 @@ function update(dt) {
     player.x = clamp(player.x + (mx / l) * mag * spd * dt, player.r, WORLD - player.r);
     player.y = clamp(player.y + (my / l) * mag * spd * dt, player.r, WORLD - player.r);
   }
-  // барьер арены: снаружи — пока живы владыки, изнутри — во время финала
+  // барьер арены: снаружи — пока живы владыки, изнутри — во время финала;
+  // в Зионе — стены города
   {
     let dcx = player.x - CX, dcy = player.y - CY;
     if (dcx === 0 && dcy === 0) dcy = 1; // вырожденный случай точного центра
     const dc = Math.hypot(dcx, dcy);
-    if (!finalActive && dc < R_ARENA + player.r) {
+    if (inZion) {
+      if (dc > R_ZION - player.r - 6) {
+        const k = (R_ZION - player.r - 6) / dc;
+        player.x = CX + dcx * k;
+        player.y = CY + dcy * k;
+      }
+      // фонтан в центре лечит
+      if (dc < 110) player.hp = Math.min(player.maxHp, player.hp + 14 * dt);
+    } else if (!finalActive && dc < R_ARENA + player.r) {
       const k = (R_ARENA + player.r) / dc;
       player.x = CX + dcx * k;
       player.y = CY + dcy * k;
@@ -1409,7 +1474,9 @@ function update(dt) {
       drops.push({ x: CX, y: CY + 80, type: 'item', item: godArmor, godBag: true });
       nextPortal = { x: CX, y: CY, charge: 0 };
       Music.setBoss(false);
-      banner = { text: 'Мир ' + worldNum + ' пройден!', sub: 'Заберите сумку с бронёй и шагните в портал — дальше сильнее', t: 5 };
+      const godFame = 60 * worldNum;
+      player.fame += godFame;
+      banner = { text: 'Мир ' + worldNum + ' пройден!', sub: '+' + godFame + ' славы · заберите сумку и шагните в портал — дальше сильнее', t: 5 };
       continue;
     }
     // владыка: банка (ловкость или защита) + предмет своей стихии + лечение;
@@ -1423,11 +1490,24 @@ function update(dt) {
     for (let j = 0; j < 2; j++) drops.push({ x: b.x + rand(-55, 55), y: b.y + rand(-55, 55), type: 'hp' });
     bosses.splice(i, 1);
     lordsLeft--;
+    // очки славы за владыку
+    const lordFame = 20 * worldNum;
+    player.fame += lordFame;
     if (lordsLeft > 0) {
-      banner = { text: b.name + ' повержен!', sub: 'Осталось владык: ' + lordsLeft + ' из 5', t: 3 };
+      banner = { text: b.name + ' повержен!', sub: '+' + lordFame + ' славы · осталось владык: ' + lordsLeft + ' из 5', t: 3 };
     } else {
       finalT = 4;
-      banner = { text: 'Все владыки пали!', sub: 'Безумный Бог призывает всех в свою цитадель…', t: 4 };
+      banner = { text: 'Все владыки пали!', sub: '+' + lordFame + ' славы · Безумный Бог призывает всех в цитадель…', t: 4 };
+    }
+  }
+
+  // портал из Зиона в мир (канал 1 с)
+  if (inZion && zionPortal && state === 'play') {
+    if (dist2(player.x, player.y, zionPortal.x, zionPortal.y) < 48 * 48) {
+      zionPortal.charge += dt;
+      if (zionPortal.charge >= 1) enterWorld();
+    } else {
+      zionPortal.charge = 0;
     }
   }
 
@@ -1545,6 +1625,15 @@ function update(dt) {
       life: rand(0.6, 1.2), maxLife: 1.2,
       color: Math.random() < 0.5 ? '#ff9838' : '#ffc060', r: rand(1.5, 3),
     });
+  } else if (z.key === 'zion' && Math.random() < dt * 8) {
+    // брызги фонтана
+    const fa = rand(0, TAU);
+    particles.push({
+      x: CX + Math.cos(fa) * rand(0, 40), y: CY + Math.sin(fa) * rand(0, 40) - 10,
+      vx: rand(-25, 25), vy: rand(-70, -30),
+      life: rand(0.4, 0.8), maxLife: 0.8,
+      color: '#8accee', r: rand(1.5, 2.5),
+    });
   } else if (z.key === 'citadel' && Math.random() < dt * 10) {
     particles.push({
       x: CX + rand(-R_CITADEL, R_CITADEL) * 0.9, y: CY + rand(-R_CITADEL, R_CITADEL) * 0.9,
@@ -1573,6 +1662,114 @@ function draw() {
   ctx.save();
   ctx.translate(-cam.x + sx, -cam.y + sy);
 
+  // ----- мирный город Зион: старт всех забегов -----
+  if (inZion) {
+    ctx.fillStyle = '#0a0d12';
+    ctx.fillRect(cam.x - 60, cam.y - 60, W + 120, H + 120);
+    // мостовая
+    ctx.fillStyle = '#2a2620';
+    ctx.beginPath(); ctx.arc(CX, CY, R_ZION, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#332e26';
+    ctx.beginPath(); ctx.arc(CX, CY, R_ZION * 0.72, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,230,180,0.12)';
+    ctx.lineWidth = 2;
+    for (const rr of [0.35, 0.55, 0.72, 0.9]) {
+      ctx.beginPath(); ctx.arc(CX, CY, R_ZION * rr, 0, TAU); ctx.stroke();
+    }
+    // стены города
+    ctx.strokeStyle = '#8a7048';
+    ctx.lineWidth = 10;
+    ctx.beginPath(); ctx.arc(CX, CY, R_ZION, 0, TAU); ctx.stroke();
+    // дома по кругу
+    for (let i = 0; i < 6; i++) {
+      const ha = Math.PI / 2 + 0.5 + (i / 6) * TAU;
+      if (Math.abs(((ha - (-Math.PI / 2) + TAU) % TAU) - 0) < 0.6) continue; // не загораживать портал
+      const hx = CX + Math.cos(ha) * R_ZION * 0.78, hy = CY + Math.sin(ha) * R_ZION * 0.78;
+      ctx.fillStyle = '#4a3c2c';
+      ctx.fillRect(hx - 42, hy - 30, 84, 60);
+      ctx.fillStyle = '#6a4a30';
+      ctx.beginPath();
+      ctx.moveTo(hx - 50, hy - 30); ctx.lineTo(hx, hy - 64); ctx.lineTo(hx + 50, hy - 30);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffd88a';
+      ctx.fillRect(hx - 10, hy - 8, 20, 24); // тёплое окно-дверь
+    }
+    // фонари
+    for (let i = 0; i < 6; i++) {
+      const la = (i / 6) * TAU + Math.PI / 6;
+      const lx = CX + Math.cos(la) * R_ZION * 0.5, ly = CY + Math.sin(la) * R_ZION * 0.5;
+      ctx.fillStyle = '#3a3228';
+      ctx.fillRect(lx - 3, ly - 34, 6, 34);
+      const lg = ctx.createRadialGradient(lx, ly - 40, 2, lx, ly - 40, 42);
+      lg.addColorStop(0, 'rgba(255,214,120,0.55)');
+      lg.addColorStop(1, 'rgba(255,214,120,0)');
+      ctx.fillStyle = lg;
+      ctx.beginPath(); ctx.arc(lx, ly - 40, 42, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#ffd876';
+      ctx.beginPath(); ctx.arc(lx, ly - 40, 6, 0, TAU); ctx.fill();
+    }
+    // фонтан (лечит)
+    ctx.fillStyle = '#5a666e';
+    ctx.beginPath(); ctx.arc(CX, CY, 84, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#3a7a9e';
+    ctx.beginPath(); ctx.arc(CX, CY, 68, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#5aa8cc';
+    ctx.beginPath(); ctx.arc(CX, CY, 68 * (0.8 + Math.sin(gameTime * 2) * 0.06), 0, TAU); ctx.fill();
+    ctx.fillStyle = '#8accee';
+    ctx.beginPath(); ctx.arc(CX, CY - 6, 16 + Math.sin(gameTime * 5) * 3, 0, TAU); ctx.fill();
+    // доска славы (запад)
+    const bx = CX - R_ZION * 0.62, by = CY;
+    ctx.fillStyle = '#4a3c2c';
+    ctx.fillRect(bx - 6, by - 60, 12, 120);
+    ctx.fillStyle = '#2e2820';
+    ctx.fillRect(bx - 84, by - 96, 168, 74);
+    ctx.strokeStyle = '#8a7048';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(bx - 84, by - 96, 168, 74);
+    ctx.fillStyle = '#f4d47c';
+    ctx.font = 'bold 15px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('ДОСКА СЛАВЫ', bx, by - 78);
+    const top = loadRecords().slice(0, 3);
+    ctx.font = '11px system-ui';
+    ctx.fillStyle = '#cdd8e4';
+    if (top.length) {
+      top.forEach((r, i) => ctx.fillText(
+        (i + 1) + '. ' + (r.name || 'Безымянный') + ' — ★' + (r.fame || 0) + ' (мир ' + (r.world || 1) + ')',
+        bx, by - 56 + i * 16));
+    } else {
+      ctx.fillText('Пока пусто — впишите себя!', bx, by - 48);
+    }
+    // портал в мир (север)
+    if (zionPortal) {
+      const pr = 34 + Math.sin(gameTime * 4) * 4;
+      const pg = ctx.createRadialGradient(zionPortal.x, zionPortal.y, 4, zionPortal.x, zionPortal.y, pr + 20);
+      pg.addColorStop(0, 'rgba(200,240,255,0.95)');
+      pg.addColorStop(0.6, 'rgba(90,168,232,0.55)');
+      pg.addColorStop(1, 'rgba(90,168,232,0)');
+      ctx.fillStyle = pg;
+      ctx.beginPath(); ctx.arc(zionPortal.x, zionPortal.y, pr + 20, 0, TAU); ctx.fill();
+      ctx.strokeStyle = '#9fd0f0';
+      ctx.lineWidth = 3;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(zionPortal.x, zionPortal.y, pr - i * 8, gameTime * (2 + i), gameTime * (2 + i) + 4.2);
+        ctx.stroke();
+      }
+      if (zionPortal.charge > 0) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(zionPortal.x, zionPortal.y, pr + 28, -Math.PI / 2, -Math.PI / 2 + TAU * Math.min(1, zionPortal.charge / 1));
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#cde8ff';
+      ctx.font = 'bold 14px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText('Портал: Мир ' + worldNum, zionPortal.x, zionPortal.y - pr - 30);
+    }
+    ctx.textAlign = 'left';
+  } else
   // ----- отдельная локация финала: Цитадель Безумного Бога -----
   if (finalActive) {
     // пустота вокруг цитадели
@@ -2079,14 +2276,15 @@ function drawUI() {
   ctx.textAlign = 'right';
   ctx.fillStyle = '#f4d47c';
   ctx.font = 'bold 13px system-ui';
-  ctx.fillText('Мир ' + worldNum + (finalActive ? ' · Финальная битва!' : ' · Владык: ' + lordsLeft + ' / 5'), W - 18, 24);
+  ctx.fillText('⭐ ' + player.fame + ' · Мир ' + worldNum
+    + (inZion ? '' : finalActive ? ' · Финальная битва!' : ' · Владык: ' + lordsLeft + ' / 5'), W - 18, 24);
   ctx.fillStyle = '#9fb0c3';
   ctx.font = '12px system-ui';
   ctx.fillText(zoneAt(player.x, player.y).name, W - 18, 44);
   ctx.fillStyle = '#66788e';
   ctx.font = '11px system-ui';
   ctx.fillText('M · звук: ' + (Music.isMuted() ? 'выкл' : 'вкл') + ' · ' + fmtTime(runTime), W - 18, 64);
-  if (!finalActive) drawMinimap(); // в Цитадели карта мира не нужна
+  if (!finalActive && !inZion) drawMinimap(); // в Цитадели и Зионе карта мира не нужна
 
   // HP ближайшего босса (на узких экранах — ниже минимапы, чтобы не наезжать на бары)
   if (engagedBoss) {
