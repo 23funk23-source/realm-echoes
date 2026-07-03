@@ -80,19 +80,46 @@ addEventListener('keydown', e => {
   }
 });
 addEventListener('keyup', e => keys[e.code] = false);
-addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+addEventListener('mousemove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  // не дёргать тач-перетаскивание физической мышью на гибридных устройствах
+  if (drag && drag.touchId === undefined) dragMove(e.clientX, e.clientY);
+});
 canvas.addEventListener('mousedown', e => {
   if (e.button === 0) {
-    if (uiClick(e.clientX, e.clientY)) return; // клик по слотам — не прицеливание
+    if (beginSlotDrag(e.clientX, e.clientY)) return; // взяли предмет — не прицеливание
+    if (drag && slotRectAt(e.clientX, e.clientY)) return; // панель — активная drop-зона
     mouse.down = true;
   }
-  if (e.button === 2) useAbility();
+  if (e.button === 2) {
+    // ПКМ по занятому слоту — быстро выбросить предмет
+    const r = state === 'play' && player ? slotRectAt(e.clientX, e.clientY) : null;
+    const it = r && slotItemAt(r);
+    if (it) {
+      setSlot(r, null);
+      discardItem(it);
+      recalcStats();
+      return;
+    }
+    useAbility();
+  }
 });
-addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
+addEventListener('mouseup', e => {
+  if (e.button === 0) {
+    mouse.down = false;
+    if (drag && drag.touchId === undefined) finishDrag(e.clientX, e.clientY);
+  }
+});
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('blur', () => {
   mouse.down = false;
   for (const k in keys) keys[k] = false; // иначе клавиши «залипают» при Alt-Tab
+  if (drag) {
+    // mouseup/touchend может не прийти при потере фокуса — вернуть предмет в слот
+    setSlot(drag.from, drag.item);
+    recalcStats();
+    drag = null;
+  }
 });
 
 // пауза при сворачивании вкладки; при возврате — реанимация аудио (iOS 'interrupted')
@@ -108,7 +135,7 @@ document.addEventListener('visibilitychange', () => {
 // левая половина — виртуальный джойстик, правый нижний угол — кнопка умения,
 // касание в остальной правой части — ручной прицел (как зажатая ЛКМ)
 const IS_TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-const touchCtl = { moveId: null, aimId: null, stick: null, tap: null };
+const touchCtl = { moveId: null, aimId: null, stick: null };
 // на узких экранах кнопка поднята, чтобы не перекрывать слоты экипировки
 const abilityBtn = () => ({ x: W - 74, y: H - 84 - (W < 440 ? 56 : 0), r: 46 });
 
@@ -122,11 +149,10 @@ canvas.addEventListener('touchstart', e => {
     // кнопка умения рисуется поверх слотов — и проверяется первой
     const ab = abilityBtn();
     if (dist2(x, y, ab.x, ab.y) < (ab.r + 12) ** 2) { useAbility(); continue; }
-    // слот экипировки: кандидат тапа, сработает на touchend, если палец не сдвинулся
-    // (не блокируем джойстик — палец, поставленный сюда для движения, ведёт себя как обычно)
-    if (slotRects().some(r => x >= r.x && x <= r.x + r.size && y >= r.y && y <= r.y + r.size)) {
-      touchCtl.tap = { id: t.identifier, x, y };
-    }
+    // занятый слот — берём предмет (тап без сдвига = надеть/снять, сдвиг = перетащить);
+    // пустые слоты не поглощают ввод, палец работает как джойстик
+    if (beginSlotDrag(x, y, t.identifier)) continue;
+    if (drag && slotRectAt(x, y)) continue; // во время перетаскивания панель поглощает касания
     if (x < W * 0.45 && touchCtl.moveId === null) {
       touchCtl.moveId = t.identifier;
       touchCtl.stick = { x, y, dx: 0, dy: 0 };
@@ -140,10 +166,9 @@ canvas.addEventListener('touchstart', e => {
 canvas.addEventListener('touchmove', e => {
   e.preventDefault();
   for (const t of e.changedTouches) {
-    // сдвиг пальца отменяет тап по слоту — это было движение, а не клик
-    if (touchCtl.tap && t.identifier === touchCtl.tap.id
-        && dist2(t.clientX, t.clientY, touchCtl.tap.x, touchCtl.tap.y) > 144) {
-      touchCtl.tap = null;
+    if (drag && t.identifier === drag.touchId) {
+      dragMove(t.clientX, t.clientY);
+      continue;
     }
     if (t.identifier === touchCtl.moveId && touchCtl.stick) {
       const s = touchCtl.stick;
@@ -157,10 +182,8 @@ canvas.addEventListener('touchmove', e => {
 
 function touchEnd(e) {
   for (const t of e.changedTouches) {
-    // осознанный тап по слоту: палец отпущен там же, где поставлен
-    if (touchCtl.tap && t.identifier === touchCtl.tap.id) {
-      uiClick(touchCtl.tap.x, touchCtl.tap.y);
-      touchCtl.tap = null;
+    if (drag && t.identifier === drag.touchId) {
+      finishDrag(t.clientX, t.clientY);
     }
     if (t.identifier === touchCtl.moveId) { touchCtl.moveId = null; touchCtl.stick = null; }
     if (t.identifier === touchCtl.aimId) { touchCtl.aimId = null; mouse.down = false; }
@@ -278,15 +301,18 @@ function recalcStats() {
   player.atkRate = cls.fireRate * atk;
 }
 
-// подобрать предмет: в пустой слот сразу, иначе в рюкзак; false — некуда
+// подобрать предмет: в пустой слот сразу, иначе в рюкзак; false — некуда.
+// Слот-источник активного drag зарезервирован — finishDrag вернёт туда предмет.
 function giveItem(it) {
-  if (!player.equip[it.slot]) {
+  const resSlot = drag && drag.from.kind === 'equip' ? drag.from.slot : null;
+  const resBag = drag && drag.from.kind === 'bag' ? drag.from.idx : -1;
+  if (!player.equip[it.slot] && it.slot !== resSlot) {
     player.equip[it.slot] = it;
     recalcStats();
     banner = { text: 'Надето: ' + it.name, sub: fmtItem(it), t: 2.6 };
     return true;
   }
-  const free = player.bags.indexOf(null);
+  const free = player.bags.findIndex((b, i) => !b && i !== resBag);
   if (free >= 0) {
     player.bags[free] = it;
     banner = { text: 'В рюкзак: ' + it.name, sub: fmtItem(it), t: 2.4 };
@@ -655,7 +681,7 @@ function startRun(clsKey) {
   recalcStats();
   bullets = []; ebullets = []; drops = []; particles = [];
   engagedBoss = null; lordsLeft = 5; finalT = 0; finalActive = false;
-  worldNum = 1; nextPortal = null;
+  worldNum = 1; nextPortal = null; drag = null;
   runTime = 0; killCount = 0; shake = 0; lastZone = 'forest';
   genWorld();
   banner = { text: 'Лес Эха', sub: 'Пробивайтесь от окраин мира к центру — там ждёт Безумный Бог', t: 4 };
@@ -792,35 +818,124 @@ function slotRects() {
   return rects;
 }
 
-// вернуть true, если клик/тап пришёлся на слот и обработан
-function uiClick(x, y) {
-  if (state !== 'play' || !player) return false;
+// ---- перетаскивание предметов: клик/тап = быстрое действие (надеть/снять),
+// drag = точное перемещение между слотами, отпустить за панелью = выбросить ----
+let drag = null; // { item, from, sx, sy, x, y, moved, touchId }
+
+function slotRectAt(x, y) {
   for (const r of slotRects()) {
-    if (x < r.x || x > r.x + r.size || y < r.y || y > r.y + r.size) continue;
-    if (r.kind === 'equip') {
-      const it = player.equip[r.slot];
-      if (!it) continue; // пустой слот не поглощает ввод (движение/прицел важнее)
+    if (x >= r.x && x <= r.x + r.size && y >= r.y && y <= r.y + r.size) return r;
+  }
+  return null;
+}
+const slotItemAt = r => r.kind === 'equip' ? player.equip[r.slot] : player.bags[r.idx];
+function setSlot(r, it) {
+  if (r.kind === 'equip') player.equip[r.slot] = it;
+  else player.bags[r.idx] = it;
+}
+
+// взять предмет из-под курсора/пальца; true — взяли (ввод поглощён панелью)
+function beginSlotDrag(x, y, touchId) {
+  if (state !== 'play' || !player || drag) return false;
+  const r = slotRectAt(x, y);
+  if (!r) return false;
+  const it = slotItemAt(r);
+  if (!it) return false; // пустой слот не поглощает ввод (движение/прицел важнее)
+  setSlot(r, null);
+  recalcStats();
+  drag = { item: it, from: r, sx: x, sy: y, x, y, moved: false, touchId };
+  return true;
+}
+
+function dragMove(x, y) {
+  if (!drag) return;
+  drag.x = x; drag.y = y;
+  if (dist2(x, y, drag.sx, drag.sy) > 100) drag.moved = true;
+}
+
+// выбросить предмет на землю рядом с игроком (его можно поднять снова)
+function discardItem(it) {
+  let x = clamp(player.x + rand(-14, 14), 20, WORLD - 20);
+  let y = clamp(player.y + 36, 20, WORLD - 20);
+  // дроп не должен лечь за барьер: внутрь стены цитадели в финале,
+  // наружу запечатанного центра до него — иначе он виден, но недостижим
+  let dx = x - CX, dy = y - CY;
+  if (dx === 0 && dy === 0) dy = 1;
+  const dc = Math.hypot(dx, dy);
+  if (finalActive && dc > R_CITADEL - 40) {
+    const k = (R_CITADEL - 40) / dc;
+    x = CX + dx * k; y = CY + dy * k;
+  } else if (!finalActive && dc < R_ARENA + 40) {
+    const k = (R_ARENA + 40) / dc;
+    x = CX + dx * k; y = CY + dy * k;
+  }
+  drops.push({ x, y, type: 'item', item: it, noPick: 1.4 });
+  banner = { text: 'Выброшено: ' + it.name, sub: '', t: 1.4, small: true };
+  Music.sfx('hit');
+}
+
+function finishDrag(x, y) {
+  if (!drag) return;
+  const d = drag;
+  drag = null;
+  if (state !== 'play' || !player) { setSlot(d.from, d.item); recalcStats(); return; }
+
+  if (!d.moved) {
+    // обычный клик/тап: снять в рюкзак или надеть из рюкзака
+    if (d.from.kind === 'equip') {
       const free = player.bags.indexOf(null);
       if (free >= 0) {
-        player.bags[free] = it;
-        player.equip[r.slot] = null;
-        recalcStats();
-        banner = { text: 'Снято: ' + it.name, sub: '', t: 1.4, small: true };
+        player.bags[free] = d.item;
+        banner = { text: 'Снято: ' + d.item.name, sub: '', t: 1.4, small: true };
       } else {
-        banner = { text: 'Рюкзак полон', sub: '', t: 1.4, small: true };
+        setSlot(d.from, d.item);
+        banner = { text: 'Рюкзак полон — перетащите за панель, чтобы выбросить', sub: '', t: 1.8, small: true };
       }
     } else {
-      const it = player.bags[r.idx];
-      if (!it) continue;
-      // надеть из рюкзака (обмен с текущим предметом слота)
-      player.bags[r.idx] = player.equip[it.slot] || null;
-      player.equip[it.slot] = it;
-      recalcStats();
-      banner = { text: 'Надето: ' + it.name, sub: fmtItem(it), t: 2.2, small: true };
+      const cur = player.equip[d.item.slot];
+      player.equip[d.item.slot] = d.item;
+      player.bags[d.from.idx] = cur || null;
+      banner = { text: 'Надето: ' + d.item.name, sub: fmtItem(d.item), t: 2.2, small: true };
     }
-    return true;
+    recalcStats();
+    return;
   }
-  return false;
+
+  const t = slotRectAt(x, y);
+  if (!t) {
+    // отпустили вне панели — выбросить на землю
+    discardItem(d.item);
+    recalcStats();
+    return;
+  }
+  if (t.kind === 'equip') {
+    if (d.item.slot !== t.slot) {
+      setSlot(d.from, d.item);
+      banner = { text: SLOT_NAMES[d.item.slot] + ' сюда не встаёт', sub: '', t: 1.4, small: true };
+    } else {
+      const disp = player.equip[t.slot];
+      player.equip[t.slot] = d.item;
+      if (disp) setSlot(d.from, disp); // источник пуст — обмен всегда корректен
+      banner = { text: 'Надето: ' + d.item.name, sub: fmtItem(d.item), t: 2, small: true };
+    }
+  } else {
+    const disp = player.bags[t.idx];
+    player.bags[t.idx] = d.item;
+    if (disp) {
+      if (d.from.kind === 'bag' || disp.slot === d.from.slot) {
+        setSlot(d.from, disp);
+      } else {
+        const free = player.bags.indexOf(null);
+        if (free >= 0) player.bags[free] = disp;
+        else { // некуда деть вытесненный предмет — откат всей операции
+          player.bags[t.idx] = disp;
+          setSlot(d.from, d.item);
+          banner = { text: 'Нет места для обмена', sub: '', t: 1.4, small: true };
+        }
+      }
+    }
+  }
+  recalcStats();
 }
 
 function spawnBullet(ang, speed, dmg, r, range, pierce) {
@@ -1198,9 +1313,10 @@ function update(dt) {
     if (dead) ebullets.splice(i, 1);
   }
 
-  // зелья
+  // зелья и предметы на земле
   for (let i = drops.length - 1; i >= 0; i--) {
     const d = drops[i];
+    if (d.noPick && d.noPick > 0) { d.noPick -= dt; continue; } // только что выброшен
     if (dist2(d.x, d.y, player.x, player.y) < 26 * 26) {
       if (d.type === 'dex') {
         player.dexPots++;
@@ -1216,6 +1332,7 @@ function update(dt) {
         if (!banner || banner.small) banner = { text: 'Защита! Броня +2', sub: '', t: 1.5, small: true };
         burst(d.x, d.y, 12, '#9ab0c8');
       } else if (d.type === 'item') {
+        if (drag) continue; // во время перетаскивания слот-источник логически занят — не подбирать
         if (!giveItem(d.item)) {
           // инвентарь полон — предмет остаётся лежать
           if (!banner) banner = { text: 'Инвентарь полон', sub: 'Снимите или замените предмет кликом по слотам внизу', t: 1.6, small: true };
@@ -1791,7 +1908,38 @@ function drawUI() {
   ctx.textAlign = 'left';
   const sr = slotRects();
   ctx.fillText('экипировка', sr[0].x + 2, sr[0].y - 9);
-  ctx.fillText('рюкзак · клик — надеть/снять', sr[3].x + 2, sr[3].y - 9);
+  ctx.fillText('рюкзак · тащи между слотами, за панель — выбросить', sr[3].x + 2, sr[3].y - 9);
+
+  // предмет «в руке» при перетаскивании
+  if (drag) {
+    if (drag.moved) {
+      // подсветка подходящих целей
+      ctx.lineWidth = 2.5;
+      for (const r of sr) {
+        const fits = r.kind === 'bag' || r.slot === drag.item.slot;
+        if (!fits) continue;
+        ctx.strokeStyle = 'rgba(122,199,79,0.85)';
+        ctx.strokeRect(r.x - 2, r.y - 2, r.size + 4, r.size + 4);
+      }
+      const overPanel = !!slotRectAt(drag.x, drag.y);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = overPanel ? '#9fb0c3' : '#e86a5e';
+      ctx.font = 'bold 12px system-ui';
+      ctx.fillText(overPanel ? drag.item.name : 'Отпустите — выбросить: ' + drag.item.name, drag.x, drag.y - 30);
+    }
+    ctx.fillStyle = SLOT_COLORS[drag.item.slot];
+    ctx.beginPath();
+    ctx.moveTo(drag.x, drag.y - 13); ctx.lineTo(drag.x + 13, drag.y);
+    ctx.lineTo(drag.x, drag.y + 13); ctx.lineTo(drag.x - 13, drag.y);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#10151c';
+    ctx.font = 'bold 10px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('T' + drag.item.tier, drag.x, drag.y + 1);
+  }
 
   // сенсорный интерфейс
   if (IS_TOUCH && state === 'play') {
