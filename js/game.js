@@ -257,15 +257,32 @@ const LORD_GENITIVE = {
   moonArchon: 'Луны', flameLord: 'Пламени', madGod: 'Безумного Бога',
 };
 
-function makeItem(slot, tier, owner) {
-  const it = { slot, tier, name: SLOT_NAMES[slot] + (owner ? ' ' + owner : '') + ' T' + tier };
-  if (slot === 'weapon') it.dmg = 0.08 + 0.06 * tier;
-  else if (slot === 'armor') it.armor = 2 + 2 * tier;
+// редкость в духе цветных сумок RotMG: чем сложнее босс — тем ценнее дроп
+const RARITIES = [
+  { key: 'common', name: 'обычный', color: '#c8d0dc', bag: '#8a5a2c', mul: 1 },
+  { key: 'rare', name: 'редкий', color: '#5a9fe8', bag: '#2e5ab0', mul: 1.4 },
+  { key: 'epic', name: 'эпический', color: '#c07af0', bag: '#7a3ac0', mul: 1.8 },
+  { key: 'legendary', name: 'легендарный', color: '#ffd257', bag: '#c8912c', mul: 2.3 },
+];
+// bonus 0..1 сдвигает бросок к ценному
+function rollRarity(bonus) {
+  const r = Math.random() + bonus;
+  if (r > 1.3) return 3;
+  if (r > 0.98) return 2;
+  if (r > 0.62) return 1;
+  return 0;
+}
+
+function makeItem(slot, tier, owner, rar = 0) {
+  const R = RARITIES[rar];
+  const it = { slot, tier, rar, name: SLOT_NAMES[slot] + (owner ? ' ' + owner : '') + ' T' + tier };
+  if (slot === 'weapon') it.dmg = (0.08 + 0.06 * tier) * R.mul;
+  else if (slot === 'armor') it.armor = Math.round((2 + 2 * tier) * R.mul);
   else {
     const roll = Math.floor(rand(0, 3));
-    if (roll === 0) it.hp = 15 + 15 * tier;
-    else if (roll === 1) it.speed = 8 + 6 * tier;
-    else it.atkSpd = 0.05 + 0.05 * tier;
+    if (roll === 0) it.hp = Math.round((15 + 15 * tier) * R.mul);
+    else if (roll === 1) it.speed = Math.round((8 + 6 * tier) * R.mul);
+    else it.atkSpd = (0.05 + 0.05 * tier) * R.mul;
   }
   return it;
 }
@@ -277,7 +294,7 @@ function fmtItem(it) {
   if (it.hp) b.push('+' + it.hp + ' HP');
   if (it.speed) b.push('+' + it.speed + ' к скорости');
   if (it.atkSpd) b.push('+' + Math.round(it.atkSpd * 100) + '% скор. атаки');
-  return it.name + ' (' + b.join(', ') + ')';
+  return RARITIES[it.rar || 0].name + ' ' + it.name + ' (' + b.join(', ') + ')';
 }
 
 // характеристики игрока = база класса + уровни + банки + надетые предметы
@@ -353,10 +370,55 @@ function spawnEnemy(kindKey, x, y) {
 }
 
 // ================= снаряды боссов =================
-function ering(x, y, n, speed, dmg, color, offset = 0, br = 7) {
+function ering(x, y, n, speed, dmg, color, offset = 0, br = 7, flags) {
   for (let i = 0; i < n; i++) {
     const a = offset + (i / n) * TAU;
-    ebullets.push({ x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r: br, dmg, color, life: 9 });
+    ebullets.push(Object.assign(
+      { x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r: br, dmg, color, life: 9 }, flags));
+  }
+}
+
+// стена пуль с брешью — нужно найти проход и проскочить (кайт в духе RotMG)
+function bulletWall(x, y, ang, spread, n, speed, dmg, color, flags) {
+  const gap = 2 + Math.floor(rand(0, n - 4));
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(i - gap) <= 2) continue; // брешь для прохода
+    const a = ang - spread / 2 + (i / (n - 1)) * spread;
+    ebullets.push(Object.assign(
+      { x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r: 9, dmg, color, life: 8 }, flags));
+  }
+}
+
+// ================= телеграфы спец-атак: успей выбежать =================
+let telegraphs = [];
+// зона: красный круг, после задержки — взрыв кольцом пуль + урон, если стоишь внутри
+function zoneTelegraph(x, y, r, delay, opts) {
+  telegraphs.push(Object.assign({ kind: 'zone', x, y, r, t: delay, total: delay }, opts));
+}
+// луч: полоса от точки по направлению, после задержки — копьё из пуль вдоль линии
+function beamTelegraph(x, y, ang, len, delay, opts) {
+  telegraphs.push(Object.assign({ kind: 'beam', x, y, ang, len, t: delay, total: delay }, opts));
+}
+function updateTelegraphs(dt) {
+  for (let i = telegraphs.length - 1; i >= 0; i--) {
+    const tg = telegraphs[i];
+    tg.t -= dt;
+    if (tg.t > 0) continue;
+    telegraphs.splice(i, 1);
+    if (tg.kind === 'zone') {
+      burst(tg.x, tg.y, 14, tg.color || '#ff6a50');
+      ering(tg.x, tg.y, tg.n || 10, tg.speed || 220, tg.dmg, tg.color || '#ff8a60', rand(0, TAU), 7, tg.flags);
+      if (dist2(player.x, player.y, tg.x, tg.y) < (tg.r + player.r) ** 2) hurtPlayer(tg.dmg + 5);
+      shake = Math.max(shake, 5);
+    } else {
+      for (let j = 0; j < 14; j++) {
+        const px = tg.x + Math.cos(tg.ang) * (j / 14) * tg.len;
+        const py = tg.y + Math.sin(tg.ang) * (j / 14) * tg.len;
+        ebullets.push(Object.assign(
+          { x: px, y: py, vx: Math.cos(tg.ang) * 430, vy: Math.sin(tg.ang) * 430, r: 7, dmg: tg.dmg, color: tg.color || '#e8e2a0', life: 1.6 }, tg.flags));
+      }
+      shake = Math.max(shake, 4);
+    }
   }
 }
 function efan(x, y, n, spread, speed, dmg, color, br = 7) {
@@ -381,8 +443,8 @@ function leashClamp(b) {
 
 const BOSSDEFS = {
   stormLord: {
-    name: 'Громовой Владыка', sprite: 'lordStorm', hp: 1250, r: 44, color: '#7ab8f0', contact: 15, xp: 240,
-    init(b) { b.tBlink = 4; b.tFan = 1.0; b.tRing = 3.5; },
+    name: 'Громовой Владыка', sprite: 'lordStorm', hp: 1900, r: 44, color: '#7ab8f0', contact: 17, xp: 300,
+    init(b) { b.tBlink = 4; b.tFan = 1.0; b.tRing = 3.5; b.tSpec = 3.5; },
     update(b, dt) {
       const rage = b.hp < b.maxHp * 0.4;
       b.tBlink -= dt;
@@ -400,11 +462,22 @@ const BOSSDEFS = {
       if (b.tFan <= 0) { b.tFan = rage ? 0.8 : 1.2; efan(b.x, b.y, 3, 0.22, 350, 13, '#a8d8ff', 6); }
       b.tRing -= dt;
       if (b.tRing <= 0) { b.tRing = 3.5; ering(b.x, b.y, rage ? 20 : 16, 175, 13, this.color, rand(0, TAU)); }
+      // «Небесная кара»: молнии бьют по позиции игрока — стоять на месте нельзя
+      b.tSpec -= dt;
+      if (b.tSpec <= 0) {
+        b.tSpec = rage ? 4 : 5.5;
+        for (let i = 0; i < 3; i++) {
+          zoneTelegraph(
+            clamp(player.x + rand(-90, 90), 60, WORLD - 60),
+            clamp(player.y + rand(-90, 90), 60, WORLD - 60),
+            95, 0.85 + i * 0.16, { dmg: 15, n: 10, speed: 265, color: '#a8d8ff' });
+        }
+      }
     },
   },
   oceanKing: {
-    name: 'Морской Царь', sprite: 'lordOcean', hp: 1450, r: 46, color: '#4ecdc4', contact: 15, xp: 250, speed: 34,
-    init(b) { b.ang = 0; b.tSpiral = 0; b.tWave = 3; },
+    name: 'Морской Царь', sprite: 'lordOcean', hp: 2200, r: 46, color: '#4ecdc4', contact: 17, xp: 320, speed: 52,
+    init(b) { b.ang = 0; b.tSpiral = 0; b.tWave = 3; b.tWall = 5; },
     update(b, dt) {
       const a = Math.atan2(player.y - b.y, player.x - b.x);
       b.x += Math.cos(a) * this.speed * dt;
@@ -426,11 +499,19 @@ const BOSSDEFS = {
         ering(b.x, b.y, rage ? 26 : 22, 128, 13, this.color, rand(0, TAU), 9);
         shake = Math.max(shake, 4);
       }
+      // «Цунами»: стена пуль с брешью — найди проход; вода замедляет
+      b.tWall -= dt;
+      if (b.tWall <= 0) {
+        b.tWall = rage ? 4.5 : 6.5;
+        const aim = Math.atan2(player.y - b.y, player.x - b.x);
+        bulletWall(b.x, b.y, aim, 2.4, 22, 185, 14, '#4ecdc4', { slow: true });
+        shake = Math.max(shake, 4);
+      }
     },
   },
   natureWarden: {
-    name: 'Страж Рощи', sprite: 'lordNature', hp: 1550, r: 47, color: '#6ec84a', contact: 16, xp: 250, speed: 28,
-    init(b) { b.ang = 0; b.tSpiral = 0; b.tVolley = 2.5; b.tSum = 7; },
+    name: 'Страж Рощи', sprite: 'lordNature', hp: 2300, r: 47, color: '#6ec84a', contact: 18, xp: 320, speed: 44,
+    init(b) { b.ang = 0; b.tSpiral = 0; b.tVolley = 2.5; b.tSum = 7; b.tSpec = 4.5; },
     update(b, dt) {
       const a = Math.atan2(player.y - b.y, player.x - b.x);
       b.x += Math.cos(a) * this.speed * dt;
@@ -454,11 +535,25 @@ const BOSSDEFS = {
         const near = enemies.filter(e => dist2(e.x, e.y, b.x, b.y) < 450 * 450).length;
         if (near < 3) spawnEnemy('treant', b.x + rand(-90, 90), b.y + rand(-90, 90));
       }
+      // «Корни»: кольцо зон вокруг игрока с одним просветом — выбегай точно
+      b.tSpec -= dt;
+      if (b.tSpec <= 0) {
+        b.tSpec = rage ? 4.5 : 6;
+        const gap = Math.floor(rand(0, 5));
+        for (let i = 0; i < 5; i++) {
+          if (i === gap) continue;
+          const za = (i / 5) * TAU + rand(-0.1, 0.1);
+          zoneTelegraph(
+            clamp(player.x + Math.cos(za) * 130, 60, WORLD - 60),
+            clamp(player.y + Math.sin(za) * 130, 60, WORLD - 60),
+            90, 1.05, { dmg: 14, n: 8, speed: 205, color: '#a8e070' });
+        }
+      }
     },
   },
   moonArchon: {
-    name: 'Лунный Архонт', sprite: 'lordMoon', hp: 1350, r: 42, color: '#b48ae8', contact: 15, xp: 250,
-    init(b) { b.tTp = 3; b.tFan = 1.5; b.tSum = 6; },
+    name: 'Лунный Архонт', sprite: 'lordMoon', hp: 2050, r: 42, color: '#b48ae8', contact: 17, xp: 310,
+    init(b) { b.tTp = 3; b.tFan = 1.5; b.tSum = 6; b.tBeam = 4; },
     update(b, dt) {
       const rage = b.hp < b.maxHp * 0.35;
       b.tTp -= dt;
@@ -481,11 +576,18 @@ const BOSSDEFS = {
         const near = enemies.filter(e => dist2(e.x, e.y, b.x, b.y) < 450 * 450).length;
         if (near < 3) spawnEnemy('moonshade', b.x + rand(-90, 90), b.y + rand(-90, 90));
       }
+      // «Лунный луч»: телеграфированная линия от босса сквозь игрока, затем копьё пуль
+      b.tBeam -= dt;
+      if (b.tBeam <= 0) {
+        b.tBeam = rage ? 3.8 : 5.5;
+        const ba = Math.atan2(player.y - b.y, player.x - b.x);
+        beamTelegraph(b.x, b.y, ba, 720, 0.8, { dmg: 16, color: '#d9a8ff' });
+      }
     },
   },
   flameLord: {
-    name: 'Повелитель Пламени', sprite: 'lordFire', hp: 1450, r: 46, color: '#ff6a2a', contact: 16, xp: 260, speed: 50,
-    init(b) { b.ang = 0; b.tSpiral = 0; b.tWave = 3; b.tImp = 6; },
+    name: 'Повелитель Пламени', sprite: 'lordFire', hp: 2200, r: 46, color: '#ff6a2a', contact: 18, xp: 330, speed: 62,
+    init(b) { b.ang = 0; b.tSpiral = 0; b.tWave = 3; b.tImp = 6; b.tTrack = 4.5; },
     update(b, dt) {
       const a = Math.atan2(player.y - b.y, player.x - b.x);
       b.x += Math.cos(a) * this.speed * dt;
@@ -516,11 +618,23 @@ const BOSSDEFS = {
           spawnEnemy('imp', b.x + rand(-80, 80), b.y + rand(-80, 80));
         }
       }
+      // «Извержение»: дорожка взрывов от босса к игроку; огонь поджигает
+      b.tTrack -= dt;
+      if (b.tTrack <= 0) {
+        b.tTrack = rage ? 4.2 : 5.8;
+        const ta = Math.atan2(player.y - b.y, player.x - b.x);
+        for (let i = 1; i <= 5; i++) {
+          zoneTelegraph(
+            clamp(b.x + Math.cos(ta) * i * 115, 60, WORLD - 60),
+            clamp(b.y + Math.sin(ta) * i * 115, 60, WORLD - 60),
+            85, 0.7 + i * 0.13, { dmg: 13, n: 8, speed: 225, color: '#ffb066', flags: { burn: true } });
+        }
+      }
     },
   },
   madGod: {
-    name: 'Безумный Бог', sprite: 'madGod', hp: 3400, r: 54, color: '#e8c05a', contact: 22, xp: 500,
-    init(b) { b.ang = 0; b.tSpiral = 0; b.tFan = 1.6; b.tRing = 3; b.tSum = 5; b.tTp = 4.5; },
+    name: 'Безумный Бог', sprite: 'madGod', hp: 5200, r: 54, color: '#e8c05a', contact: 24, xp: 800,
+    init(b) { b.ang = 0; b.tSpiral = 0; b.tFan = 1.6; b.tRing = 3; b.tSum = 5; b.tTp = 4.5; b.tBeam = 4; b.tZone = 5; b.tWall = 6; },
     update(b, dt) {
       const ph = b.hp > b.maxHp * 0.66 ? 1 : b.hp > b.maxHp * 0.33 ? 2 : 3;
       const dC = Math.hypot(b.x - CX, b.y - CY);
@@ -572,6 +686,33 @@ const BOSSDEFS = {
           burst(b.x, b.y, 18, b.color);
           Music.sfx('teleport');
           ering(b.x, b.y, 12, 195, 14, '#ff6858');
+        }
+      }
+      // спец-атаки по фазам: луч → зоны → стена с брешью
+      b.tBeam -= dt;
+      if (b.tBeam <= 0) {
+        b.tBeam = ph === 3 ? 3.5 : 5;
+        const ba = Math.atan2(player.y - b.y, player.x - b.x);
+        beamTelegraph(b.x, b.y, ba, 800, 0.8, { dmg: 17, color: '#ffd257' });
+      }
+      if (ph >= 2) {
+        b.tZone -= dt;
+        if (b.tZone <= 0) {
+          b.tZone = 4;
+          for (let i = 0; i < 3; i++) {
+            zoneTelegraph(
+              clamp(player.x + rand(-100, 100), CX - R_CITADEL + 60, CX + R_CITADEL - 60),
+              clamp(player.y + rand(-100, 100), CY - R_CITADEL + 60, CY + R_CITADEL - 60),
+              95, 0.85 + i * 0.15, { dmg: 16, n: 10, speed: 250, color: '#ffd257' });
+          }
+        }
+      }
+      if (ph === 3) {
+        b.tWall -= dt;
+        if (b.tWall <= 0) {
+          b.tWall = 5.5;
+          const wa = Math.atan2(player.y - b.y, player.x - b.x);
+          bulletWall(b.x, b.y, wa, 2.6, 24, 195, 16, '#ff6858', { slow: true });
         }
       }
     },
@@ -674,14 +815,14 @@ function startRun(clsKey) {
     speed: cls.speed, atkRate: cls.fireRate,
     level: 1, xp: 0, xpNeed: 25,
     fireT: 0, abilityT: 0, inv: 0, aimDir: -Math.PI / 2,
-    dexPots: 0, defPots: 0, armor: 0,
+    dexPots: 0, defPots: 0, armor: 0, slowT: 0, burnT: 0,
     equip: { weapon: null, armor: null, ring: null },
     bags: [null, null, null],
   };
   recalcStats();
   bullets = []; ebullets = []; drops = []; particles = [];
   engagedBoss = null; lordsLeft = 5; finalT = 0; finalActive = false;
-  worldNum = 1; nextPortal = null; drag = null;
+  worldNum = 1; nextPortal = null; drag = null; telegraphs = [];
   runTime = 0; killCount = 0; shake = 0; lastZone = 'forest';
   genWorld();
   banner = { text: 'Лес Эха', sub: 'Пробивайтесь от окраин мира к центру — там ждёт Безумный Бог', t: 4 };
@@ -748,7 +889,8 @@ function nextWorld() {
   lordsLeft = 5;
   finalT = 0;
   engagedBoss = null;
-  bullets = []; ebullets = []; drops = []; particles = [];
+  bullets = []; ebullets = []; drops = []; particles = []; telegraphs = [];
+  player.slowT = 0; player.burnT = 0;
   player.x = CX;
   player.y = WORLD - 170;
   genWorld();
@@ -971,8 +1113,9 @@ function update(dt) {
   }
   if (mag > 0 && (mx || my)) {
     const l = Math.hypot(mx, my);
-    player.x = clamp(player.x + (mx / l) * mag * player.speed * dt, player.r, WORLD - player.r);
-    player.y = clamp(player.y + (my / l) * mag * player.speed * dt, player.r, WORLD - player.r);
+    const spd = player.speed * (player.slowT > 0 ? 0.55 : 1); // замедление от воды
+    player.x = clamp(player.x + (mx / l) * mag * spd * dt, player.r, WORLD - player.r);
+    player.y = clamp(player.y + (my / l) * mag * spd * dt, player.r, WORLD - player.r);
   }
   // барьер арены: снаружи — пока живы владыки, изнутри — во время финала
   {
@@ -993,6 +1136,24 @@ function update(dt) {
   player.abilityT = Math.max(0, player.abilityT - dt);
   player.fireT -= dt;
   player.hp = Math.min(player.maxHp, player.hp + 1.3 * dt);
+
+  // статус-эффекты: замедление и горение (в духе RotMG)
+  player.slowT = Math.max(0, player.slowT - dt);
+  if (player.burnT > 0) {
+    player.burnT -= dt;
+    player.hp -= 7 * dt; // огонь жжёт сквозь броню
+    if (Math.random() < dt * 10) {
+      particles.push({ x: player.x + rand(-10, 10), y: player.y + rand(-14, 4), vx: rand(-10, 10), vy: rand(-50, -25), life: 0.5, maxLife: 0.5, color: '#ff9838', r: rand(1.5, 3) });
+    }
+    if (player.hp <= 0 && state === 'play') {
+      player.hp = 0.1;
+      player.inv = 0;
+      hurtPlayer(3); // смерть от горения через общий путь
+    }
+  }
+
+  // спец-атаки боссов: телеграфы взрываются
+  updateTelegraphs(dt);
 
   // стрельба: автоатака по ближайшей цели, зажатая ЛКМ — ручное прицеливание
   let fireAng = null;
@@ -1241,7 +1402,9 @@ function update(dt) {
       if (state !== 'play') continue; // размен: смерть игрока в тот же кадр — мир не засчитывается
       // сумка с бронёй Безумного Бога + портал в следующий мир
       ebullets = [];
-      const godArmor = makeItem('armor', worldNum + 1, LORD_GENITIVE.madGod);
+      telegraphs = []; // висящие зоны/лучи не должны рваться, пока игрок собирает лут
+      // самый сложный босс — самый ценный дроп (минимум эпический)
+      const godArmor = makeItem('armor', worldNum + 1, LORD_GENITIVE.madGod, Math.max(2, rollRarity(0.6)));
       godArmor.hp = 30 + 10 * worldNum;
       drops.push({ x: CX, y: CY + 80, type: 'item', item: godArmor, godBag: true });
       nextPortal = { x: CX, y: CY, charge: 0 };
@@ -1249,11 +1412,13 @@ function update(dt) {
       banner = { text: 'Мир ' + worldNum + ' пройден!', sub: 'Заберите сумку с бронёй и шагните в портал — дальше сильнее', t: 5 };
       continue;
     }
-    // владыка: банка (ловкость или защита) + предмет своей стихии + лечение
+    // владыка: банка (ловкость или защита) + предмет своей стихии + лечение;
+    // чем дальше мир — тем ценнее дроп
     drops.push({ x: b.x, y: b.y, type: Math.random() < 0.5 ? 'dex' : 'def' });
     drops.push({
       x: b.x + rand(-45, 45), y: b.y + rand(-45, 45),
-      type: 'item', item: makeItem(SLOTS[Math.floor(rand(0, 3))], worldNum, LORD_GENITIVE[b.key]),
+      type: 'item',
+      item: makeItem(SLOTS[Math.floor(rand(0, 3))], worldNum, LORD_GENITIVE[b.key], rollRarity(0.12 + 0.1 * (worldNum - 1))),
     });
     for (let j = 0; j < 2; j++) drops.push({ x: b.x + rand(-55, 55), y: b.y + rand(-55, 55), type: 'hp' });
     bosses.splice(i, 1);
@@ -1285,7 +1450,8 @@ function update(dt) {
       // отдельная локация: внешний мир остаётся позади
       player.x = CX;
       player.y = CY + R_CITADEL - 110;
-      bullets = []; ebullets = []; enemies = [];
+      bullets = []; ebullets = []; enemies = []; telegraphs = [];
+      player.slowT = 0; player.burnT = 0;
       // ценный несобранный лут (банки/предметы) переносится в цитадель к игроку
       const keep = drops.filter(d => d.type === 'dex' || d.type === 'def' || d.type === 'item');
       keep.forEach((d, ki) => {
@@ -1307,6 +1473,10 @@ function update(dt) {
     b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
     let dead = b.life <= 0 || b.x < -40 || b.x > WORLD + 40 || b.y < -40 || b.y > WORLD + 40;
     if (!dead && dist2(b.x, b.y, player.x, player.y) < (b.r + player.r) ** 2) {
+      if (player.inv <= 0) { // статусы не вешаются во время неуязвимости
+        if (b.slow) player.slowT = 1.4;
+        if (b.burn) player.burnT = 2.4;
+      }
       hurtPlayer(b.dmg);
       dead = true;
     }
@@ -1485,6 +1655,31 @@ function draw() {
   } // конец обычного мира (else от цитадели)
 
   if (player) {
+    // телеграфы спец-атак: красная зона/луч — успей выйти
+    for (const tg of telegraphs) {
+      const p = 1 - tg.t / tg.total;
+      if (tg.kind === 'zone') {
+        ctx.fillStyle = 'rgba(255,60,40,' + (0.08 + 0.2 * p).toFixed(3) + ')';
+        ctx.beginPath(); ctx.arc(tg.x, tg.y, tg.r, 0, TAU); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,90,60,0.9)';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(tg.x, tg.y, tg.r, 0, TAU); ctx.stroke();
+        // сжимающееся кольцо-таймер
+        ctx.strokeStyle = 'rgba(255,200,120,0.9)';
+        ctx.beginPath(); ctx.arc(tg.x, tg.y, Math.max(2, tg.r * (1 - p)), 0, TAU); ctx.stroke();
+      } else {
+        ctx.save();
+        ctx.translate(tg.x, tg.y);
+        ctx.rotate(tg.ang);
+        ctx.fillStyle = 'rgba(255,60,40,' + (0.1 + 0.22 * p).toFixed(3) + ')';
+        ctx.fillRect(0, -14, tg.len, 28);
+        ctx.strokeStyle = 'rgba(255,120,80,0.8)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(0, -14, tg.len, 28);
+        ctx.restore();
+      }
+    }
+
     // портал в следующий мир
     if (nextPortal) {
       const pr = 30 + Math.sin(gameTime * 4) * 4;
@@ -1514,21 +1709,28 @@ function draw() {
     // зелья и сумки с предметами
     for (const d of drops) {
       if (d.type === 'item') {
-        // лут-бэг в духе RotMG, камень — цвет слота
+        // лут-бэг: цвет сумки — редкость (как в RotMG), сверху — иконка предмета
+        const rar = RARITIES[d.item.rar || 0];
         const R = d.godBag ? 14 : 11;
         ctx.fillStyle = 'rgba(0,0,0,0.3)';
         ctx.beginPath(); ctx.ellipse(d.x, d.y + R - 2, R, 4, 0, 0, TAU); ctx.fill();
         const bob = Math.sin(gameTime * 4) * 2;
-        ctx.fillStyle = '#8a5a2c';
+        if (d.item.rar >= 2) { // эпик и выше светятся
+          const gl = ctx.createRadialGradient(d.x, d.y + bob, 2, d.x, d.y + bob, R + 12);
+          gl.addColorStop(0, rar.color + 'aa');
+          gl.addColorStop(1, rar.color + '00');
+          ctx.fillStyle = gl;
+          ctx.beginPath(); ctx.arc(d.x, d.y + bob, R + 12, 0, TAU); ctx.fill();
+        }
+        ctx.fillStyle = rar.bag;
         ctx.beginPath(); ctx.arc(d.x, d.y + bob, R, 0, TAU); ctx.fill();
-        ctx.strokeStyle = d.godBag ? '#e8c05a' : '#5c3c1c';
+        ctx.strokeStyle = rar.color;
         ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(d.x, d.y + bob, R, 0, TAU); ctx.stroke();
-        ctx.fillStyle = SLOT_COLORS[d.item.slot];
-        ctx.beginPath();
-        ctx.moveTo(d.x, d.y - 5 + bob); ctx.lineTo(d.x + 5, d.y + bob);
-        ctx.lineTo(d.x, d.y + 5 + bob); ctx.lineTo(d.x - 5, d.y + bob);
-        ctx.closePath(); ctx.fill();
+        const iconKey = d.item.slot === 'weapon' ? 'iconWeapon' : d.item.slot === 'armor' ? 'iconArmor' : 'iconRing';
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(sprites[iconKey], Math.round(d.x - 9), Math.round(d.y - 9 + bob), 18, 18);
+        ctx.imageSmoothingEnabled = true;
       } else if (d.type === 'def') {
         ctx.fillStyle = '#9ab0c8';
         ctx.beginPath(); ctx.arc(d.x, d.y, 9, 0, TAU); ctx.fill();
@@ -1751,8 +1953,12 @@ function drawBoss(b) {
 function bar(x, y, w, h, frac, fg, bg) {
   ctx.fillStyle = bg;
   ctx.fillRect(x, y, w, h);
+  const fw = w * clamp(frac, 0, 1);
   ctx.fillStyle = fg;
-  ctx.fillRect(x, y, w * clamp(frac, 0, 1), h);
+  ctx.fillRect(x, y, fw, h);
+  // глянец сверху
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.fillRect(x, y, fw, Math.max(2, h * 0.4));
   ctx.strokeStyle = 'rgba(255,255,255,0.25)';
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
@@ -1831,6 +2037,44 @@ function drawUI() {
     + ' · Скор. ' + Math.round(player.speed)
     + ' · Атака ' + player.atkRate.toFixed(1) + '/с', 18, 120);
 
+  // статус-эффекты
+  if (player.burnT > 0 || player.slowT > 0) {
+    ctx.font = 'bold 11px system-ui';
+    let chipX = 18;
+    if (player.burnT > 0) { ctx.fillStyle = '#ff9838'; ctx.fillText('▲ Горение', chipX, 138); chipX += 78; }
+    if (player.slowT > 0) { ctx.fillStyle = '#4ecdc4'; ctx.fillText('❄ Замедление', chipX, 138); }
+  }
+
+  // квест-стрелка к ближайшему боссу (как в RotMG)
+  if (!finalActive && bosses.length && state === 'play') {
+    let target = null, best = Infinity;
+    for (const b of bosses) {
+      const d2b = dist2(b.x, b.y, player.x, player.y);
+      if (d2b < best) { best = d2b; target = b; }
+    }
+    const dq = Math.sqrt(best);
+    if (target && dq > 760) {
+      const qa = Math.atan2(target.y - player.y, target.x - player.x);
+      const qr = Math.min(W, H) * 0.34;
+      const qx = W / 2 + Math.cos(qa) * qr;
+      const qy = H / 2 + Math.sin(qa) * qr;
+      ctx.save();
+      ctx.translate(qx, qy);
+      ctx.rotate(qa);
+      ctx.globalAlpha = 0.55 + Math.sin(gameTime * 5) * 0.2;
+      ctx.fillStyle = target.color;
+      ctx.beginPath();
+      ctx.moveTo(16, 0); ctx.lineTo(-9, -10); ctx.lineTo(-3, 0); ctx.lineTo(-9, 10);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = target.color;
+      ctx.font = 'bold 11px system-ui';
+      ctx.fillText(target.name, W / 2 + Math.cos(qa) * (qr - 34), H / 2 + Math.sin(qa) * (qr - 34));
+    }
+  }
+
   // правый блок: мир, владыки, зона, звук, время + миникарта
   ctx.textAlign = 'right';
   ctx.fillStyle = '#f4d47c';
@@ -1879,24 +2123,24 @@ function drawUI() {
   ctx.textAlign = 'center';
   for (const r of slotRects()) {
     const it = r.kind === 'equip' ? player.equip[r.slot] : player.bags[r.idx];
-    ctx.fillStyle = 'rgba(10,14,20,0.72)';
+    ctx.fillStyle = 'rgba(10,14,20,0.78)';
     ctx.fillRect(r.x, r.y, r.size, r.size);
-    ctx.strokeStyle = r.kind === 'equip'
-      ? (it ? SLOT_COLORS[r.slot] : 'rgba(255,255,255,0.28)')
-      : 'rgba(255,255,255,0.18)';
-    ctx.lineWidth = 2;
+    // рамка: цвет редкости предмета, тип слота — по иконке
+    ctx.strokeStyle = it ? RARITIES[it.rar || 0].color
+      : r.kind === 'equip' ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = it && (it.rar || 0) >= 2 ? 2.5 : 2;
     ctx.strokeRect(r.x + 1, r.y + 1, r.size - 2, r.size - 2);
     const cx2 = r.x + r.size / 2, cy2 = r.y + r.size / 2;
     if (it) {
-      // ромб цвета слота + тир
-      ctx.fillStyle = SLOT_COLORS[it.slot];
-      ctx.beginPath();
-      ctx.moveTo(cx2, cy2 - 11); ctx.lineTo(cx2 + 11, cy2);
-      ctx.lineTo(cx2, cy2 + 11); ctx.lineTo(cx2 - 11, cy2);
-      ctx.closePath(); ctx.fill();
-      ctx.fillStyle = '#10151c';
-      ctx.font = 'bold 10px system-ui';
-      ctx.fillText('T' + it.tier, cx2, cy2 + 1);
+      const iconKey = it.slot === 'weapon' ? 'iconWeapon' : it.slot === 'armor' ? 'iconArmor' : 'iconRing';
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(sprites[iconKey], Math.round(cx2 - 15), Math.round(cy2 - 16), 30, 30);
+      ctx.imageSmoothingEnabled = true;
+      ctx.fillStyle = RARITIES[it.rar || 0].color;
+      ctx.font = 'bold 9px system-ui';
+      ctx.textAlign = 'right';
+      ctx.fillText('T' + it.tier, r.x + r.size - 3, r.y + r.size - 7);
+      ctx.textAlign = 'center';
     } else if (r.kind === 'equip') {
       ctx.fillStyle = 'rgba(255,255,255,0.25)';
       ctx.font = 'bold 15px system-ui';
@@ -1927,18 +2171,14 @@ function drawUI() {
       ctx.font = 'bold 12px system-ui';
       ctx.fillText(overPanel ? drag.item.name : 'Отпустите — выбросить: ' + drag.item.name, drag.x, drag.y - 30);
     }
-    ctx.fillStyle = SLOT_COLORS[drag.item.slot];
-    ctx.beginPath();
-    ctx.moveTo(drag.x, drag.y - 13); ctx.lineTo(drag.x + 13, drag.y);
-    ctx.lineTo(drag.x, drag.y + 13); ctx.lineTo(drag.x - 13, drag.y);
-    ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.fillStyle = '#10151c';
+    const dIconKey = drag.item.slot === 'weapon' ? 'iconWeapon' : drag.item.slot === 'armor' ? 'iconArmor' : 'iconRing';
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(sprites[dIconKey], Math.round(drag.x - 17), Math.round(drag.y - 17), 34, 34);
+    ctx.imageSmoothingEnabled = true;
+    ctx.fillStyle = RARITIES[drag.item.rar || 0].color;
     ctx.font = 'bold 10px system-ui';
     ctx.textAlign = 'center';
-    ctx.fillText('T' + drag.item.tier, drag.x, drag.y + 1);
+    ctx.fillText('T' + drag.item.tier, drag.x + 14, drag.y + 14);
   }
 
   // сенсорный интерфейс
